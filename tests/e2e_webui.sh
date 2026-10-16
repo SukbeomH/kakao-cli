@@ -33,6 +33,7 @@ trap cleanup EXIT
 echo "1) deploy modules to VM"
 scp -q "$ROOT/src/kakao_cli/worker.py" "$ROOT/src/kakao_cli/webui.py" \
        "$ROOT/src/kakao_cli/tui.py" "$ROOT/src/kakao_cli/cli.py" \
+       "$ROOT/src/kakao_cli/driver.py" \
        "$VM:$REMOTE/src/kakao_cli/" || fail "scp failed"
 
 echo "2) start webui on VM (0.0.0.0:$PORT)"
@@ -49,19 +50,51 @@ for i in $(seq 1 30); do
 done
 [ "$ok" = 1 ] || fail "webui did not come up on $VM_IP:$PORT"
 
-echo "4) drive the page with a headless browser"
-SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_browser.js" "http://$VM_IP:$PORT" "$MSG" \
-  || fail "browser driver failed"
+readback(){ # readback <ere> — true if the regex appears in the open chat dump
+  local pat=$1 i
+  for i in $(seq 1 8); do
+    if ssh "$VM" "adb -s $SER shell uiautomator dump /sdcard/kcv.xml >/dev/null 2>&1; \
+                  adb -s $SER shell cat /sdcard/kcv.xml 2>/dev/null" | grep -qE -- "$pat"; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
 
-echo "5) assert delivered (adb readback over ssh)"
-ok=0
-for i in $(seq 1 8); do
-  if ssh "$VM" "adb -s $SER shell uiautomator dump /sdcard/kcv.xml >/dev/null 2>&1; \
-                adb -s $SER shell cat /sdcard/kcv.xml 2>/dev/null" | grep -q -- "$MSG"; then
-    ok=1; break
-  fi
+echo "4) text send via the browser"
+SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_browser.js" "http://$VM_IP:$PORT" "$MSG" \
+  || fail "browser text driver failed"
+readback "$MSG" || fail "text message not found in self-chat"
+echo "   text OK (device-verified)"
+
+echo "5) document (zip) send via the '+' picker"
+ZIP="/tmp/kc_e2e_${SESS}_$(date +%H%M%S).zip"
+python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('hello.txt','hi'); z.close()" "$ZIP" \
+  || fail "could not build test zip"
+FILE="$ZIP" SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_browser.js" "http://$VM_IP:$PORT" \
+  || { rm -f "$ZIP"; fail "browser zip driver failed"; }
+# confirm a .zip File bubble landed (name may be elided in the UI, so match the
+# bubble's extension + the "Open File" affordance rather than the full name)
+readback '\.zip.*Open File' || { rm -f "$ZIP"; fail "zip not found in self-chat"; }
+rm -f "$ZIP"
+echo "   document OK (device-verified)"
+
+echo "6) image (png) send via the share picker — exercises the ACTION_SEND branch"
+PNG="/tmp/kc_e2e_${SESS}_$(date +%H%M%S).png"
+python3 -c "import base64,sys; open(sys.argv[1],'wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHElEQVR4nGNgYGD4z4AKGEeFRoVGhUaFhq0QAFYAEQF9wh6pAAAAAElFTkSuQmCC'))" "$PNG" \
+  || fail "could not build test png"
+FILE="$PNG" SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_browser.js" "http://$VM_IP:$PORT" \
+  || { rm -f "$PNG"; fail "browser image driver failed"; }
+rm -f "$PNG"
+# image bubbles carry no filename; the worker re-anchors after the share intent,
+# so poll the live state for a [Photo] (it appears a beat after status "sent")
+img_ok=0
+for i in $(seq 1 12); do
+  if curl -s "http://$VM_IP:$PORT/api/state" | grep -q '\[Photo\]'; then img_ok=1; break; fi
   sleep 2
 done
-[ "$ok" = 1 ] || fail "message not found in self-chat"
+[ "$img_ok" = 1 ] || fail "image not confirmed ([Photo] not in state)"
+echo "   image OK ([Photo] in state)"
 
-echo "PASS: webui e2e (browser sent & device-verified)"
+echo "PASS: webui e2e (text + document + image, all device-verified)"

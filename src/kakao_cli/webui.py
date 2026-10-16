@@ -14,9 +14,14 @@ Endpoints:
 """
 from __future__ import annotations
 import json
+import os
 import queue
+import re
+import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, unquote
 
 from .adb import connect
 from .worker import Worker
@@ -47,6 +52,13 @@ class State:
         with self.lock:
             return {"seq": self.seq, "rooms": self.rooms, "room": self.room,
                     "messages": self.messages, "status": self.status}
+
+    def has_target(self) -> bool:
+        """A room is open, or an open is in flight. Commands queue behind that
+        open (open is enqueued first), so send/sendfile are safe to accept —
+        this avoids a 400 during the brief want_open gap when a row is reclicked."""
+        with self.lock:
+            return bool(self.room or self.pending)
 
     def want_open(self, room: str):
         with self.lock:
@@ -82,7 +94,16 @@ def _pump(worker: Worker, state: State):
         state.apply(kind, data)
 
 
-def make_handler(worker: Worker, state: State):
+def _safe_name(raw: str) -> str:
+    """Browser filename -> a shell/picker-safe basename, keeping the extension.
+    `\\w` keeps Hangul; drop path separators and anything that could break the
+    unquoted `am broadcast -d file://…` / DocumentsUI search in send_doc."""
+    base = os.path.basename(unquote(raw or "")) or "file"
+    safe = re.sub(r"[^\w.\-]+", "_", base).strip("._") or "file"
+    return safe
+
+
+def make_handler(worker: Worker, state: State, tmpdir: str):
     class Handler(BaseHTTPRequestHandler):
         server_version = "kakao-cli-webui"
 
@@ -116,7 +137,6 @@ def make_handler(worker: Worker, state: State):
             elif path == "/api/state":
                 since = None
                 if "?" in self.path:
-                    from urllib.parse import parse_qs
                     q = parse_qs(self.path.split("?", 1)[1])
                     if q.get("since"):
                         try:
@@ -142,12 +162,34 @@ def make_handler(worker: Worker, state: State):
                 self._json(200, {"ok": True, "room": room})
             elif self.path == "/api/send":
                 text = self._read_json().get("text") or ""
-                if not state.snapshot()["room"]:
+                if not state.has_target():
                     return self._json(400, {"error": "no room open"})
                 if not text.strip():
                     return self._json(400, {"error": "empty text"})
                 worker.put("send", text)
                 self._json(200, {"ok": True})
+            elif self.path.split("?", 1)[0] == "/api/sendfile":
+                if not state.has_target():
+                    return self._json(400, {"error": "no room open"})
+                n = int(self.headers.get("Content-Length") or 0)
+                if n <= 0:
+                    return self._json(400, {"error": "empty body"})
+                name = ""
+                if "?" in self.path:
+                    q = parse_qs(self.path.split("?", 1)[1])
+                    name = (q.get("name") or [""])[0]
+                safe = _safe_name(name)
+                dest = os.path.join(tmpdir, f"{int(time.time() * 1000)}_{safe}")
+                remaining = n
+                with open(dest, "wb") as f:  # stream — never buffer a whole video
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(1 << 20, remaining))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                worker.put("sendfile", dest)
+                self._json(200, {"ok": True, "name": safe})
             elif self.path == "/api/rooms":
                 worker.put("rooms")
                 self._json(200, {"ok": True})
@@ -160,8 +202,9 @@ def make_handler(worker: Worker, state: State):
 def serve(worker: Worker, host: str, port: int) -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
+    tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     threading.Thread(target=_pump, args=(worker, state), daemon=True).start()
-    httpd = ThreadingHTTPServer((host, port), make_handler(worker, state))
+    httpd = ThreadingHTTPServer((host, port), make_handler(worker, state, tmpdir))
     httpd.daemon_threads = True
     return httpd
 
@@ -227,8 +270,11 @@ PAGE = r"""<!doctype html>
   .inputline{display:flex;align-items:center;padding:4px 12px;
     border-top:1px solid var(--line)}
   .inputline .prompt{color:var(--accent);margin-right:6px}
-  .inputline input{flex:1;background:transparent;border:none;color:var(--fg);
-    font:inherit;outline:none}
+  .inputline .attach{color:var(--accent);cursor:pointer;margin-right:8px;
+    font-weight:bold;user-select:none}
+  .inputline .attach:hover{color:var(--unread)}
+  .inputline input[type=text],.inputline #input{flex:1;background:transparent;
+    border:none;color:var(--fg);font:inherit;outline:none}
   .inputline.blur .prompt{color:var(--dim)}
   .empty{color:var(--dim);padding:8px 12px}
 </style></head>
@@ -240,9 +286,11 @@ PAGE = r"""<!doctype html>
       <div class="title" id="title">(select a room)</div>
       <div class="msgs" id="msgs"><div class="empty">—</div></div>
       <div class="inputline blur" id="inputline">
+        <span class="attach" id="attach" title="파일/이미지 첨부">+</span>
+        <input type="file" id="file" style="display:none">
         <span class="prompt">&gt;</span>
-        <input id="input" autocomplete="off" spellcheck="false"
-               placeholder="메시지 입력 후 Enter (Tab: 포커스 전환)">
+        <input id="input" type="text" autocomplete="off" spellcheck="false"
+               placeholder="메시지 입력 후 Enter (Tab: 포커스 전환, +: 파일)">
       </div>
     </div>
   </div>
@@ -254,7 +302,8 @@ const HINT = '<span class="k">kakao-cli</span> — ' +
   '<span class="k">↑↓/Enter</span>: room  ' +
   '<span class="k">Enter</span>: send  ' +
   '<span class="k">Esc</span>: list  ' +
-  '<span class="k">r</span>: refresh';
+  '<span class="k">r</span>: refresh  ' +
+  '<span class="k">+</span>: file';
 document.getElementById("header").innerHTML = HINT;
 
 let st = {seq:-1, rooms:[], room:null, messages:[], status:""};
@@ -342,6 +391,22 @@ document.addEventListener("keydown", (e)=>{
   else if(e.key==="r"){ post("/api/rooms"); }
 });
 input.addEventListener("focus", ()=>{ if(focus!=="input"){ focus="input"; render(); }});
+
+// file attach: + opens the browser picker, selection uploads to the open room
+$("attach").addEventListener("click", ()=>{
+  if(!st.room){ st.status = " 먼저 방을 선택하세요"; render(); return; }
+  $("file").click();
+});
+$("file").addEventListener("change", async (e)=>{
+  const f = e.target.files[0];
+  if(!f || !st.room) return;
+  st.status = " attaching " + f.name + " …"; render();
+  try{
+    await fetch("/api/sendfile?name=" + encodeURIComponent(f.name),
+                {method:"POST", body:f});
+  }catch(err){ /* status will reflect the worker result via poll */ }
+  e.target.value = "";
+});
 
 poll();
 setInterval(poll, 1000);

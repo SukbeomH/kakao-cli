@@ -1,10 +1,11 @@
 // Headless-browser e2e for `kakao webui`: loads the page, clicks the self-chat
-// row, types Korean into the input, presses Enter, and asserts the status bar
-// reports a send. Proves the inlined JS actually drives the API (a curl test
-// would not). Uses playwright-core + a cached Chromium; no network downloads.
+// row, then either types Korean + Enter (text mode) or attaches a file via the
+// '+' picker (file mode, when FILE is set), and asserts the status bar reports
+// a send. Proves the inlined JS actually drives the API (a curl test would not).
+// Uses playwright-core + a cached Chromium; no network downloads.
 //
 //   NODE_PATH=<playwright-core dir> CHROME=<chrome bin> SELF_NAME=<self-chat row>
-//   node webui_browser.js <base-url> <message>
+//   [FILE=<local path>] node webui_browser.js <base-url> <message>
 //
 // SELF_NAME identifies the self-chat row to click; it is never printed.
 const { chromium } = require('playwright-core');
@@ -13,6 +14,7 @@ const BASE = process.argv[2] || 'http://127.0.0.1:8800';
 const MSG = process.argv[3] || ('e2e-web-' + Date.now());
 const SELF = process.env.SELF_NAME;
 const CHROME = process.env.CHROME;
+const FILE = process.env.FILE;   // set -> file-attach mode instead of text
 
 function die(m) { console.error('FAIL: ' + m); process.exit(1); }
 
@@ -45,15 +47,35 @@ function die(m) { console.error('FAIL: ' + m); process.exit(1); }
       () => /^—.*—$/.test(document.getElementById('title').textContent.trim()),
       null, { timeout: 60000 });
     console.log('room open');
-    // type Korean into the input and send with Enter (exercises the keydown path)
-    await page.focus('#input');
-    await page.fill('#input', MSG);
-    await page.press('#input', 'Enter');
-    // status bar should report a send within a couple of poll cycles
-    await page.waitForFunction(
-      () => /sent/i.test(document.getElementById('status').textContent),
-      null, { timeout: 60000 });
-    console.log('status: send reported');
+    if (FILE) {
+      // Await the open POST first so the sendfile POST is enqueued after it
+      // (a human clicks a room then attaches much later; automation races).
+      await page.evaluate(async (self) => {
+        await fetch('/api/open', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room: self }) });
+      }, SELF);
+      await page.waitForFunction(
+        () => /^—.*—$/.test(document.getElementById('title').textContent.trim()),
+        null, { timeout: 60000 });
+      // attach a file via the '+' picker (setInputFiles works on hidden inputs)
+      await page.setInputFiles('#file', FILE);
+      console.log('file selected');
+      // MediaStore retries + DocumentsUI make this slow; status ends "sent (…)"
+      await page.waitForFunction(
+        () => /sent\s*\(/i.test(document.getElementById('status').textContent),
+        null, { timeout: 180000 });
+      console.log('status: file send reported');
+    } else {
+      // type Korean into the input and send with Enter (exercises the keydown path)
+      await page.focus('#input');
+      await page.fill('#input', MSG);
+      await page.press('#input', 'Enter');
+      await page.waitForFunction(
+        () => /sent/i.test(document.getElementById('status').textContent),
+        null, { timeout: 60000 });
+      console.log('status: send reported');
+    }
     console.log('PASS');
     await browser.close();
     process.exit(0);

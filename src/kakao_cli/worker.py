@@ -13,7 +13,8 @@ import threading
 class Worker(threading.Thread):
     """Owns the Driver. Commands in, events out — one device op at a time.
 
-    Commands (via ``put``):   ("rooms",) ("open", name) ("send", text) ("quit",)
+    Commands (via ``put``):   ("rooms",) ("open", name) ("send", text)
+                              ("sendfile", path) ("quit",)
     Events (on ``events``):    ("rooms", list) ("status", str) ("opened", name)
                                ("messages", (room, list))
     """
@@ -68,9 +69,35 @@ class Worker(threading.Thread):
                 res = self.d.send_in_room(cmd[1])
                 self._emit("status", f"sent ({res})")
                 self._poll_messages()
+        elif op == "sendfile":
+            if self.room:
+                self._send_file(cmd[1])
         elif op == "poll":
             if self.room:
                 self._poll_messages()
+
+    def _send_file(self, path):
+        """Send an uploaded file into the open room, then re-anchor and poll.
+
+        Reuses Driver.send_file (image/video via the share picker, documents via
+        the in-room '+' → File path). The share-intent branch can leave the app
+        off the room, so re-open the target if the input box is gone before
+        polling. The temp upload is always removed."""
+        import os
+        base = os.path.basename(path)
+        self._emit("status", f"attaching {base} …")
+        try:
+            res = self.d.send_file(self.room, path)
+            self._emit("status", f"sent ({res})")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        from . import RID
+        if self.d.screen().first(rid=RID["input"]) is None:
+            self.d._open_target(self.room)
+        self._poll_messages()
 
     def _refresh_rooms(self):
         self._emit("status", "loading rooms …")

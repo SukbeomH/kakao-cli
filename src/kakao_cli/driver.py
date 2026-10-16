@@ -369,14 +369,28 @@ class Driver:
         if srch:
             self.tap_node(srch); time.sleep(1.0)
             self.dev.type_text(name); time.sleep(1.5)
-        item = self._find(lambda s: next((n for n in s.all() if name in n.desc or name in n.text), None), timeout=10)
+
+        # Pick the result row's title — NOT the search box, which now also holds
+        # `name` (matching it taps the search field, selecting nothing).
+        def _doc_item(s):
+            for n in s.all():
+                if n.rid.endswith("/title") and (name in n.text or name in n.desc):
+                    return n
+            for n in s.all():  # fallback: any match that isn't the search field
+                if (name in n.desc or name in n.text) and not n.rid.endswith("search_src_text"):
+                    return n
+            return None
+        item = self._find(_doc_item, timeout=10)
         if not item:
             self.dev.back(); time.sleep(0.5); self.dev.back()  # dismiss picker
             raise KakaoError("file not found in picker", file=name)
-        self.tap_node(item); time.sleep(2.5)
-        # readback: a File bubble for our doc
-        if not _poll(lambda: name in self.dev.dump(), timeout=8):
-            raise SendUncertain("document sent but not confirmed via readback", file=name)
+        self.tap_node(item)
+        # Selecting the file dismisses DocumentsUI and returns to KakaoTalk, which
+        # sends it. Confirm by waiting to leave the picker (while it is up no
+        # KakaoTalk activity is top-resumed, so current_activity() is None).
+        if not _poll(lambda: "com.kakao.talk" in (self.dev.current_activity() or ""), timeout=12):
+            raise SendUncertain("document picker did not return to KakaoTalk", file=name)
+        time.sleep(1.5)
         return "sent"
 
 

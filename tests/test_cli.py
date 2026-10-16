@@ -115,3 +115,59 @@ def test_webui_serves_page_and_api_and_send():
         assert ("send", "안녕 한글") in worker.puts
     finally:
         httpd.shutdown()
+
+
+def _http_bytes(url, data: bytes):
+    import urllib.request
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Content-Type": "application/octet-stream"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8")
+
+
+def test_webui_sendfile_streams_and_sanitizes():
+    import os
+    import threading
+    import urllib.parse
+    sys.path.insert(0, "src")
+    from kakao_cli import webui  # noqa: E402
+
+    worker = _StubWorker()
+    httpd = webui.serve(worker, "127.0.0.1", 0)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # no room open -> 400
+        status, _ = _http_bytes(base + "/api/sendfile?name=a.zip", b"PK\x03\x04data")
+        assert status == 400
+        # open a room, then upload with a path-traversal name
+        worker.events.put(("opened", "me"))
+        _wait_room(base, "me")
+        payload = b"PK\x03\x04" + b"x" * 2048
+        qname = urllib.parse.quote("../../etc/pa ss\"wd.zip")
+        status, body = _http_bytes(base + f"/api/sendfile?name={qname}", payload)
+        assert status == 200
+        # command queued with a temp path; basename is sanitized to the leaf
+        cmd = next(c for c in worker.puts if c[0] == "sendfile")
+        path = cmd[1]
+        leaf = os.path.basename(path)
+        assert "/" not in leaf and ".." not in leaf
+        assert leaf.endswith("pa_ss_wd.zip")
+        with open(path, "rb") as f:
+            assert f.read() == payload   # streamed to disk intact
+        os.unlink(path)
+    finally:
+        httpd.shutdown()
+
+
+def test_webui_safe_name():
+    sys.path.insert(0, "src")
+    from kakao_cli.webui import _safe_name
+    assert _safe_name("../../x.png") == "x.png"
+    assert _safe_name("a b.pdf") == "a_b.pdf"
+    assert _safe_name("사진.jpg") == "사진.jpg"     # Hangul preserved
+    assert _safe_name("") == "file"
