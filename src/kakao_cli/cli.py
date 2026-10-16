@@ -120,17 +120,51 @@ def cmd_poll(args) -> int:
     return 0
 
 
+_EPILOG = """\
+examples:
+  kakao doctor --connect 10.0.0.30:5555     # check the device/app
+  kakao rooms --json                        # list chat rooms (name/unread/last msg)
+  kakao send "Mom" "집에 가는 중" --yes       # send text (requires --yes)
+  kakao memo "메모" --home                    # self-chat, then background the app
+  kakao send-file "Team" ./clip.mp4 --yes    # send image/video/document
+  kakao poll me                              # stream new messages from one room (NDJSON)
+  kakao pull-media ./inbox --new-only        # pull received media incrementally
+
+Receive model: `poll <room>` opens one room and streams newly-arrived messages
+(text + [Photo]/[Video]); robust, no notification/background dependency. `watch`
+is an alternative that reads OS notifications (requires the app backgrounded).
+"""
+
+_DESC = {
+    "doctor": "Check adb connectivity, the installed app version and current screen.",
+    "rooms": "List chat rooms with last message, time, member and unread counts.",
+    "read": "Read recent messages from a room (or the currently open room).",
+    "send": "Send a text message to a room (requires --yes).",
+    "memo": "Send a text message to your own chat (나와의 채팅) — safe for testing.",
+    "watch": "Stream incoming messages via OS notifications (app must be backgrounded).",
+    "send-file": "Send an image, video or document (pdf/zip/doc/...) to a room.",
+    "pull-media": "Pull media blobs (sent/received) from the app to a local directory.",
+    "track": "Poll the whole chat list and emit each room's newest message when it changes.",
+    "poll": "Open ONE room and stream its newly-arrived messages (recommended receive).",
+}
+
+
 def _common(p):
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--serial")
-    p.add_argument("--connect", dest="addr")
-    p.add_argument("--adb", default="adb", help="adb binary path")
+    g = p.add_argument_group("connection / output")
+    g.add_argument("--json", action="store_true", help="machine-readable JSON output")
+    g.add_argument("--serial", metavar="SERIAL", help="adb device serial (default: first device)")
+    g.add_argument("--connect", dest="addr", metavar="HOST:PORT",
+                   help="adb connect target before running, e.g. 10.0.0.30:5555")
+    g.add_argument("--adb", default="adb", metavar="PATH", help="adb binary path (default: adb)")
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(prog="kakao", description="Drive KakaoTalk (redroid) over adb")
+    ap = argparse.ArgumentParser(
+        prog="kakao",
+        description="Drive the official KakaoTalk Android app (in redroid/Waydroid) over adb.",
+        epilog=_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"kakao-cli {__version__}")
-    sub = ap.add_subparsers(dest="command", required=True)
+    sub = ap.add_subparsers(dest="command", required=True, metavar="<command>")
 
     for name, fn, extra in [
         ("doctor", cmd_doctor, None),
@@ -144,36 +178,37 @@ def build_parser():
         ("track", cmd_track, "track"),
         ("poll", cmd_poll, "poll"),
     ]:
-        sp = sub.add_parser(name)
+        sp = sub.add_parser(name, help=_DESC[name], description=_DESC[name])
         _common(sp)
         if extra == "read":
-            sp.add_argument("room", nargs="?", default=None)
-            sp.add_argument("--limit", type=int, default=20)
+            sp.add_argument("room", nargs="?", default=None, help="room name or 'me' (default: current room)")
+            sp.add_argument("--limit", type=int, default=20, metavar="N", help="max messages (default: 20)")
         elif extra == "send":
-            sp.add_argument("room")
-            sp.add_argument("text")
-            sp.add_argument("--yes", action="store_true", help="actually send")
-            sp.add_argument("--home", action="store_true", help="background app after send (receive-ready)")
+            sp.add_argument("room", help="target room name (exact)")
+            sp.add_argument("text", help="message text (Unicode OK via ADBKeyBoard)")
+            sp.add_argument("--yes", action="store_true", help="confirm the send (required)")
+            sp.add_argument("--home", action="store_true", help="background the app after sending")
         elif extra == "memo":
-            sp.add_argument("text")
-            sp.add_argument("--home", action="store_true")
+            sp.add_argument("text", help="message text")
+            sp.add_argument("--home", action="store_true", help="background the app after sending")
         elif extra == "watch":
-            sp.add_argument("--interval", type=float, default=3.0)
+            sp.add_argument("--interval", type=float, default=3.0, metavar="SEC", help="poll interval (default: 3)")
         elif extra == "send-file":
             sp.add_argument("target", help="room name or 'me'")
-            sp.add_argument("file")
-            sp.add_argument("--yes", action="store_true")
-            sp.add_argument("--home", action="store_true")
+            sp.add_argument("file", help="local path; image/video or document (pdf/zip/doc/...)")
+            sp.add_argument("--yes", action="store_true", help="confirm the send (required)")
+            sp.add_argument("--home", action="store_true", help="background the app after sending")
         elif extra == "pull-media":
-            sp.add_argument("dest")
-            sp.add_argument("--new-only", action="store_true", help="only pull media not seen before (state in <dest>/.seen.json)")
+            sp.add_argument("dest", help="local directory to write pulled media into")
+            sp.add_argument("--new-only", action="store_true",
+                            help="only pull blobs not seen before (state: <dest>/.seen.json)")
         elif extra == "track":
-            sp.add_argument("--interval", type=float, default=5.0)
-            sp.add_argument("--window", type=int, default=10)
+            sp.add_argument("--interval", type=float, default=5.0, metavar="SEC", help="poll interval (default: 5)")
+            sp.add_argument("--window", type=int, default=10, metavar="N", help="rolling recent window (default: 10)")
         elif extra == "poll":
             sp.add_argument("room", help="room name or 'me'")
-            sp.add_argument("--interval", type=float, default=3.0)
-            sp.add_argument("--limit", type=int, default=10)
+            sp.add_argument("--interval", type=float, default=3.0, metavar="SEC", help="poll interval (default: 3)")
+            sp.add_argument("--limit", type=int, default=10, metavar="N", help="messages to scan per poll (default: 10)")
         sp.set_defaults(func=fn)
     return ap
 

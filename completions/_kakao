@@ -1,0 +1,40 @@
+#compdef kakao
+# zsh completion for kakao-cli.  Install: put this file on $fpath as _kakao
+_kakao() {
+  local -a cmds
+  cmds=(
+    'doctor:check adb, device, app version'
+    'rooms:list chat rooms'
+    'read:read recent messages'
+    'send:send a text message'
+    'memo:send to self-chat'
+    'watch:stream incoming via notifications'
+    'send-file:send image/video/document'
+    'pull-media:pull media blobs'
+    'track:poll chat list for changes'
+    'poll:stream one room (recommended receive)'
+  )
+  local common=(
+    '--json[machine-readable JSON output]'
+    '--serial[adb device serial]:serial'
+    '--connect[adb connect target]:host\:port'
+    '--adb[adb binary path]:path:_files'
+  )
+  _arguments -C '1:command:->cmd' '*::arg:->args' && return
+  case $state in
+    cmd) _describe 'command' cmds ;;
+    args)
+      case $words[1] in
+        read)       _arguments $common '--limit[max messages]:N' '1:room:' ;;
+        send)       _arguments $common '--yes[confirm send]' '--home[background after]' '1:room:' '2:text:' ;;
+        memo)       _arguments $common '--home[background after]' '1:text:' ;;
+        watch)      _arguments $common '--interval[poll seconds]:sec' ;;
+        send-file)  _arguments $common '--yes[confirm send]' '--home[background after]' '1:target:' '2:file:_files' ;;
+        pull-media) _arguments $common '--new-only[incremental]' '1:dest:_files -/' ;;
+        track)      _arguments $common '--interval[poll seconds]:sec' '--window[recent window]:N' ;;
+        poll)       _arguments $common '--interval[poll seconds]:sec' '--limit[scan N]:N' '1:room:' ;;
+        *)          _arguments $common ;;
+      esac ;;
+  esac
+}
+_kakao "$@"

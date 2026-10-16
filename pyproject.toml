@@ -1,8 +1,11 @@
 [project]
 name = "kakao-cli"
 version = "0.1.0"
-description = "Linux CLI that drives the official KakaoTalk Android app in Waydroid via adb"
+description = "Linux CLI that drives the official KakaoTalk Android app (redroid/Waydroid) over adb"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+keywords = ["kakaotalk", "adb", "android", "automation", "redroid", "waydroid", "cli"]
 dependencies = []  # pure stdlib + external `adb` binary
 
 [project.scripts]
@@ -17,3 +20,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kakao_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/kakao_cli", "scripts", "docs", "completions", "README.md"]

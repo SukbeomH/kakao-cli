@@ -14,8 +14,21 @@ def test_version():
     assert "kakao-cli" in r.stdout
 
 
+def test_help_lists_commands():
+    r = run(["--help"])
+    assert r.returncode == 0
+    for cmd in ("doctor", "rooms", "send", "send-file", "poll", "pull-media"):
+        assert cmd in r.stdout
+
+
+def test_subcommand_help():
+    r = run(["send", "--help"])
+    assert r.returncode == 0
+    assert "--yes" in r.stdout and "room" in r.stdout
+
+
 def test_doctor_no_device_is_structured_error():
-    # No adb server/device in CI -> must fail with non-zero and JSON error, not a traceback.
+    # No adb/device in CI -> must fail with non-zero and JSON error, not a traceback.
     r = run(["doctor", "--json"])
     assert r.returncode != 0
     payload = json.loads(r.stdout)
@@ -23,7 +36,7 @@ def test_doctor_no_device_is_structured_error():
     assert payload["error"] in {"adb_unavailable", "device_not_found", "app_not_installed"}
 
 
-def test_notimpl_command():
-    r = run(["send", "--json"])
-    assert r.returncode == 1
-    assert json.loads(r.stdout)["ok"] is False
+def test_send_requires_positional_args():
+    # argparse should reject missing room/text with exit code 2.
+    r = run(["send"])
+    assert r.returncode == 2

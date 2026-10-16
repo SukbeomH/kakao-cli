@@ -1,0 +1,120 @@
+.TH KAKAO 1 "2026-10-16" "kakao-cli 0.1.0" "User Commands"
+.SH NAME
+kakao \- drive the official KakaoTalk Android app over adb
+.SH SYNOPSIS
+.B kakao
+.I command
+.RI [ options ]
+.RI [ args ]
+.SH DESCRIPTION
+.B kakao-cli
+controls the official KakaoTalk Android app running in redroid (or Waydroid)
+through adb UI automation. It does not reimplement the LOCO protocol or decrypt
+the local database; it operates the real app. The app is logged in as a tablet
+(sub\-device) so it coexists with the user's phone.
+.PP
+The control client needs only the
+.B adb
+binary; it reads the screen with
+.I uiautomator dump
+and acts by resource\-id/coordinate. Korean/Unicode text is entered through the
+ADBKeyBoard IME.
+.SH GLOBAL OPTIONS
+.TP
+.B \-\-json
+Machine\-readable JSON output.
+.TP
+.BI \-\-serial " SERIAL"
+adb device serial (default: first device).
+.TP
+.BI \-\-connect " HOST:PORT"
+Run \fBadb connect\fR to this target first (e.g. 10.0.0.30:5555).
+.TP
+.BI \-\-adb " PATH"
+Path to the adb binary (default: adb).
+.TP
+.B \-\-version
+Print version and exit.
+.SH COMMANDS
+.TP
+.B doctor
+Check adb connectivity, the installed app version and current screen.
+.TP
+.B rooms
+List chat rooms with last message, time, member and unread counts.
+.TP
+.BI "read " "[room|me]"
+Read recent messages from a room (or the currently open room).
+.B \-\-limit N
+caps the count (default 20).
+.TP
+.BI "send " "room text " \-\-yes
+Send a text message to a room.
+.B \-\-yes
+is required.
+.B \-\-home
+backgrounds the app afterwards.
+.TP
+.BI "memo " text
+Send a text message to your own chat (\[uB098]\[u C640]\[u C758] \[u CC44]\[u D305]); safe for testing.
+.TP
+.BI "send-file " "room|me path " \-\-yes
+Send an image, video or document (pdf/zip/doc/...). Images and videos go through
+the share recipient picker; documents go through the in\-app File picker.
+.TP
+.BI "poll " "room|me"
+Open ONE room and stream its newly\-arrived messages as NDJSON (recommended
+receive). Text and media (\fB[Photo]\fR/\fB[Video]\fR) are emitted.
+.B \-\-interval SEC
+and
+.B \-\-limit N
+tune polling.
+.TP
+.BI "pull-media " "dest"
+Pull media blobs (sent/received) to a local directory, typed by magic bytes.
+.B \-\-new-only
+pulls only blobs not seen before (state in \fIdest\fR/.seen.json).
+.TP
+.B watch
+Stream incoming messages via OS notifications. The app must be backgrounded for
+notifications to post.
+.TP
+.B track
+Poll the whole chat list and emit each room's newest message when it changes.
+.SH RECEIVE MODEL
+.B poll
+is the recommended receive path: it opens one room and streams new messages with
+no notification or background dependency, and catches muted rooms.
+.B watch
+reads OS notifications instead, which requires the app to be backgrounded and
+misses muted or focused rooms.
+.SH EXIT STATUS
+0 on success. Non\-zero with a structured JSON error on failure: 3
+.I adb_unavailable ,
+4
+.I device_not_found ,
+5
+.I app_not_installed ,
+6
+.I send_uncertain
+(readback could not confirm a send \[em] never auto\-retried).
+.SH EXAMPLES
+.nf
+kakao doctor --connect 10.0.0.30:5555
+kakao rooms --json
+kakao send "\[u C5C4]\[u B9C8]" "\[u C9D1]\[u C5D0] \[u AC00]\[u B294] \[u C911]" --yes
+kakao send-file me ./report.pdf --yes
+kakao poll me --interval 3
+kakao pull-media ./inbox --new-only
+.fi
+.SH FILES
+.TP
+.I <dest>/.seen.json
+State for \fBpull-media --new-only\fR.
+.SH SEE ALSO
+Project docs under \fIdocs/\fR; setup in \fIdocs/setup-waydroid.md\fR.
+.SH CAVEATS
+UI automation breaks when the app layout changes. Running two control sessions
+against one device causes UI contention. Unofficial automation may violate
+KakaoTalk's terms and risk account restriction \[em] use your own account,
+sparingly, at human\-like speed.
