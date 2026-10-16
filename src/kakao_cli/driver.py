@@ -128,20 +128,29 @@ class Driver:
             raise KakaoError("chat room did not open", activity=self.activity())
 
     def open_self_chat(self):
-        self.ensure_main()
-        fn = self._find(lambda s: _desc_prefix(s, "Friends tab"), timeout=10)
-        if fn:
-            self.tap_node(fn); time.sleep(0.8)
-        av = self._find(lambda s: _desc_contains(s, "Profile photo"), timeout=8)
-        if not av:
-            raise KakaoError("profile avatar not found")
-        self.tap_node(av); time.sleep(1.2)
-        mc = self._find(lambda s: _desc(s, "My Chatroom") or s.first(text="My Chatroom"), timeout=8)
-        if not mc:
-            raise KakaoError("'My Chatroom' button not found")
-        self.tap_node(mc)
-        if not self._screen_where(lambda s: s.first(rid=RID["input"]) is not None, timeout=12):
-            raise KakaoError("self chat did not open", activity=self.activity())
+        last = None
+        for attempt in range(3):
+            try:
+                self.ensure_main()
+                fn = self._find(lambda s: _desc_prefix(s, "Friends tab"), timeout=10)
+                if fn:
+                    self.tap_node(fn); time.sleep(1.0)
+                av = self._find(lambda s: _desc_contains(s, "Profile photo"), timeout=10)
+                if not av:
+                    last = "profile avatar not found"; continue
+                self.tap_node(av); time.sleep(1.4)
+                mc = self._find(lambda s: _desc(s, "My Chatroom") or s.first(text="My Chatroom"), timeout=8)
+                if not mc:
+                    last = "'My Chatroom' button not found"
+                    self.dev.back(); time.sleep(0.8); continue
+                self.tap_node(mc)
+                if self._screen_where(lambda s: s.first(rid=RID["input"]) is not None, timeout=12):
+                    return
+                last = "self chat did not open"
+            except Exception as e:  # noqa
+                last = str(e)
+            time.sleep(1.0)
+        raise KakaoError(f"open_self_chat failed: {last}", activity=self.activity())
 
     def send_in_room(self, text: str) -> str:
         s = self._screen_where(lambda s: s.first(rid=RID["input"]) is not None, timeout=10)
@@ -166,12 +175,21 @@ class Driver:
         """
         import os, time
         ext = os.path.splitext(local_path)[1].lower()
+        DOC_MIME = {".pdf": "application/pdf", ".zip": "application/zip",
+                    ".doc": "application/msword", ".txt": "text/plain",
+                    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ".xls": "application/vnd.ms-excel", ".ppt": "application/vnd.ms-powerpoint",
+                    ".hwp": "application/x-hwp"}
         if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
             kind, mime, folder = "image", "image/*", "Pictures"
         elif ext in (".mp4", ".mov", ".mkv", ".webm", ".3gp", ".m4v"):
             kind, mime, folder = "video", "video/*", "Movies"
         else:
-            raise KakaoError(f"unsupported file type: {ext}", hint="image/video only")
+            raise KakaoError(
+                f"document send not supported yet for {ext}",
+                hint="KakaoTalk routes only image/video through the share recipient picker; "
+                     "pdf/zip/doc need the in-app File flow (not exposed in this build). "
+                     "Images and videos work.")
         remote = f"/sdcard/{folder}/kc_{int(time.time())}{ext}"
         self.dev.push(local_path, remote)
         uri = self.dev.media_content_uri(remote, kind)

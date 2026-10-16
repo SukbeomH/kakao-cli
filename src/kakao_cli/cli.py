@@ -42,6 +42,8 @@ def cmd_send(args) -> dict:
                          room=args.room, text=args.text)
     d.open_room(args.room)
     result = d.send_in_room(args.text)
+    if getattr(args, "home", False):
+        d.dev.shell("input keyevent KEYCODE_HOME")
     return {"ok": True, "room": args.room, "text": args.text, "result": result}
 
 
@@ -49,6 +51,8 @@ def cmd_memo(args) -> dict:
     d = Driver(_dev(args))
     d.open_self_chat()
     result = d.send_in_room(args.text)
+    if getattr(args, "home", False):
+        d.dev.shell("input keyevent KEYCODE_HOME")
     return {"ok": True, "target": "self-chat", "text": args.text, "result": result}
 
 
@@ -69,17 +73,31 @@ def cmd_send_file(args) -> dict:
     if not args.yes:
         raise KakaoError("refusing to send without --yes", target=args.target, file=args.file)
     result = d.send_file(args.target, args.file)
+    if getattr(args, "home", False):
+        d.dev.shell("input keyevent KEYCODE_HOME")
     return {"ok": True, "target": args.target, "file": args.file, "result": result}
 
 
 
 def cmd_pull_media(args) -> dict:
+    import json, os
     dev = _dev(args)
     if getattr(dev, "serial", None):
         import subprocess
         subprocess.run([dev.adb, "-s", dev.serial, "root"], capture_output=True, timeout=20)
-    pulled = media.pull_new(dev, args.dest, set())
-    return {"ok": True, "dest": args.dest, "count": len(pulled), "files": pulled}
+    state = os.path.join(args.dest, ".seen.json")
+    seen = set()
+    if args.new_only and os.path.exists(state):
+        try:
+            seen = set(json.load(open(state)))
+        except Exception:
+            seen = set()
+    pulled = media.pull_new(dev, args.dest, seen)
+    if args.new_only:
+        os.makedirs(args.dest, exist_ok=True)
+        json.dump(sorted(seen), open(state, "w"))
+    return {"ok": True, "dest": args.dest, "new_only": args.new_only,
+            "count": len(pulled), "files": pulled}
 
 
 
@@ -135,16 +153,20 @@ def build_parser():
             sp.add_argument("room")
             sp.add_argument("text")
             sp.add_argument("--yes", action="store_true", help="actually send")
+            sp.add_argument("--home", action="store_true", help="background app after send (receive-ready)")
         elif extra == "memo":
             sp.add_argument("text")
+            sp.add_argument("--home", action="store_true")
         elif extra == "watch":
             sp.add_argument("--interval", type=float, default=3.0)
         elif extra == "send-file":
             sp.add_argument("target", help="room name or 'me'")
             sp.add_argument("file")
             sp.add_argument("--yes", action="store_true")
+            sp.add_argument("--home", action="store_true")
         elif extra == "pull-media":
             sp.add_argument("dest")
+            sp.add_argument("--new-only", action="store_true", help="only pull media not seen before (state in <dest>/.seen.json)")
         elif extra == "track":
             sp.add_argument("--interval", type=float, default=5.0)
             sp.add_argument("--window", type=int, default=10)

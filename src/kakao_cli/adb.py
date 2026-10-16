@@ -70,17 +70,24 @@ class Device:
         """Scan a pushed file into MediaStore and return its content:// URI."""
         import re as _re, time as _t
         base = device_path.rsplit("/", 1)[-1]
-        col = "images" if kind == "image" else "video"
+        if kind == "image":
+            cols = [("images", "images")]
+        elif kind == "video":
+            cols = [("video", "video")]
+        else:  # documents: generic file + downloads collections
+            cols = [("file", "file"), ("downloads", "downloads")]
         self.shell(f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
                    f"-d file://{device_path}")
-        for _ in range(10):
-            out = self.shell(f"content query --uri content://media/external/{col}/media "
-                             f"--projection _id:_data")
-            for line in out.splitlines():
-                if base in line:
-                    m = _re.search(r"_id=(\d+)", line)
-                    if m:
-                        return f"content://media/external/{col}/media/{m.group(1)}"
+        for _ in range(25):
+            for col, path in cols:
+                suffix = "/media" if col in ("images", "video", "file") else ""
+                uri = f"content://media/external/{col}{suffix}"
+                out = self.shell(f"content query --uri {uri} --projection _id:_data")
+                for line in out.splitlines():
+                    if base in line:
+                        m = _re.search(r"_id=(\d+)", line)
+                        if m:
+                            return f"{uri}/{m.group(1)}"
             _t.sleep(1.0)
         return None
 

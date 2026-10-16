@@ -136,3 +136,8 @@
 - 폰에서 "나와의 채팅"에 보낸 메시지를 `poll me`가 실시간 포착: `{"room":"me","text":"gg"}`.
 - 텍스트+미디어([Photo]/[Video]) 모두 추출. 단일 방 포그라운드라 알림/백그라운드 의존 없음. 외부(네트워크) 발신이므로 adb 동시성 충돌 없음(같은 기기 2 CLI 동시제어만 충돌).
 - 보너스 확정: 오픈채팅은 하단 "Now" 탭 하위. unread_count 목록에서 읽힘.
+
+### 후속 3건 (2026-10-16)
+- **send류 --home**: send/memo/send-file에 `--home` 추가 → 송신 후 앱 백그라운드(수신대기/연속 poll 보전용). open_self_chat 3회 재시도로 탐색 안정화(이전 "profile avatar not found" 간헐실패 해결). memo --home 검증(verified + 런처 복귀).
+- **pull-media --new-only**: `<dest>/.seen.json`에 해시 영속 → 증분 수신. 1차 18개, 2차 0개 검증.
+- **문서(pdf/zip) 전송 — 한계 확인**: SEND 핸들러가 application/*을 선언하나, RecentExcludeIntentFilterActivity는 **image/video만 수신자 피커로 라우팅**(app/*, */*, octet-stream 모두 피커 미노출, MainActivity로 빠짐). 앱 내 미디어 시트에도 '파일' 옵션 없음(Camera/Photo/Location/Music/GiftShop/MiniGames). → 문서 전송은 미지원으로 명시(send_file이 명확한 에러). 후속: 파일매니저→Android 공유 시트→KakaoTalk 경로 자동화 조사. 이미지/영상은 정상.
