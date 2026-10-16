@@ -15,9 +15,11 @@
   반복적으로 언급된다(디시 태블릿갤 App Cloner 글, 하모니카/클리앙 build.prop 글). SM-X710은 그 바로 다음 세대
   동일 라인(SM-X70x → SM-X71x)이라 allowlist 포함 가능성이 높다. 단, **SM-X710 자체로 카카오톡 옵션이 떴다는
   직접 후기는 확인하지 못함(미검증)** — allowlist는 서버 판정이므로 실기동 로그인 화면에서 최종 확인 필요.
-  - 안전장치: 만약 SM-X710에서 옵션이 안 뜨면 **SM-X700(Tab S8 Wi-Fi, gts8wifi)** 또는 선행조사 dex에서
-    실제로 발견된 **SM-X900(Tab S8 Ultra Wi-Fi)** 로 교체. 단 이 두 모델은 본 조사에서 공개 덤프의 전체
-    build.prop까지는 확보하지 못했다(gts8wifi 덤프는 tadiphone에 없음). → 1순위는 덤프가 확실한 SM-X710.
+  - 안전장치: 만약 SM-X710에서 옵션이 안 뜨면 **SM-X700(Tab S8 Wi-Fi, gts8wifi)** 로 교체(커뮤니티 보고 모델).
+    단 이 모델은 본 조사에서 공개 덤프의 전체 build.prop까지는 확보하지 못했다. → 1순위는 덤프가 확실한 SM-X710.
+  - 주의: 선행조사 dex에서 발견된 `SM-T230`/`SM-T580`/`SM-X900` 문자열은 각각 2014/2016년 구형 Tab 4·Tab A와
+    Tab S8 Ultra로 세대가 제각각이라 **공존 로그인 allowlist라기보다 기기별 예외/워크어라운드 목록 형태**로 보인다.
+    용도 미확인 → allowlist 근거로 쓰지 않는다(옵션 노출은 서버 판정이며 클라이언트에 목록 분기 없음, §4).
 
 ## 2. 설정할 Android build 속성 (SM-X710, Android 14)
 
@@ -45,6 +47,18 @@
 | ro.build.tags | release-keys | 검증(지문에 포함) | fingerprint 꼬리 `:user/release-keys` |
 | ro.build.type | user | 검증(지문에 포함) | fingerprint `...:user/...` |
 
+### 파티션별 ro.product.* 변종도 함께 설정 (검증, 덤프에서 직접 확인)
+탐지 코드가 top-level 대신 `ro.product.vendor.model` 등을 직접 읽으면 Waydroid 기본값이 노출된다.
+아래를 모두 맞춰야 한다. (`ro.product.system.device=qssi` 는 실기기 정상값 — gts9wifi로 "수정"하지 말 것)
+
+```
+ro.product.system.brand=samsung        ro.product.vendor.brand=samsung        ro.product.odm.brand=samsung
+ro.product.system.manufacturer=samsung ro.product.vendor.manufacturer=samsung ro.product.odm.manufacturer=samsung
+ro.product.system.model=SM-X710        ro.product.vendor.model=SM-X710        ro.product.odm.model=SM-X710
+ro.product.system.name=gts9wifixx      ro.product.vendor.name=gts9wifixx      ro.product.odm.name=gts9wifixx
+ro.product.system.device=qssi          ro.product.vendor.device=gts9wifi      ro.product.odm.device=gts9wifi
+```
+
 ### ro.build.fingerprint (중요 — 앱이 Build.FINGERPRINT로 읽는 값)
 덤프의 각 파티션 지문은 다음과 같다(모두 검증):
 
@@ -52,19 +66,24 @@
 - `ro.product.build.fingerprint` = `samsung/gts9wifixx/qssi:14/UP1A.231005.007/X710XXU5BYA1:user/release-keys`
 - `ro.vendor.build.fingerprint`  = `samsung/gts9wifixx/gts9wifi:13/TP1A.220624.014/X710XXU5BYA1:user/release-keys`
 
-주의: 덤프 build.prop에 **bare `ro.build.fingerprint=` 라인은 분리돼 있지 않다**(Samsung은 런타임/루트
-build.prop에서 조립). 실기기에서 `getprop ro.build.fingerprint`가 반환하는 표준형은
-`ro.product.device`(=gts9wifi) 슬롯을 쓰는 아래 값이다:
+덤프 build.prop에 **bare `ro.build.fingerprint=` 라인이 어느 파티션에도 없다**. 이 경우 Android init이
+`ro.build.fingerprint`를 구성요소 속성에서 **기계적으로 파생**한다:
+`brand/name/device:release/id/incremental:type/tags`
+(AOSP `system/core/init/property_service.cpp`의 `property_derive_build_fingerprint()`;
+https://cs.android.com/android/platform/superproject/+/master:system/core/init/property_service.cpp).
+따라서 실기기 `getprop ro.build.fingerprint` 가 반환하는 값은 아래로 결정된다:
 
 ```
 samsung/gts9wifixx/gts9wifi:14/UP1A.231005.007/X710XXU5BYA1:user/release-keys
 ```
 
-- device 슬롯 `gts9wifi`, release `14`, id/incremental은 **검증값**.
-- 이 한 줄 조합 자체는 **추론(reconstruct)** — 구성요소는 전부 덤프에서 검증했으나 bare 라인으로는 덤프에 없음.
-- 대안(완전 검증값 그대로 쓰기): system/product 지문 `.../qssi:14/...` 를 그대로 ro.build.fingerprint에 넣어도
-  무방. 단 device 슬롯이 `qssi`(GSI 프로젝트명)라 ro.product.device=gts9wifi와 불일치 → 앱이 교차검증 시
-  약점이 될 수 있어, 일관성 위해 `gts9wifi` 슬롯 조립본을 권장.
+- **추론이 아니라 AOSP init 파생 규칙으로 결정된 값** — 구성요소(brand=samsung, name=gts9wifixx,
+  device=gts9wifi, release=14, id=UP1A.231005.007, incremental=X710XXU5BYA1, type=user, tags=release-keys)는
+  전부 덤프에서 검증됨.
+- **Waydroid 함의**: 이 bare 라인을 명시하지 않으면 init이 Waydroid 자체 이미지 값에서 파생한다. 따라서
+  `ro.build.fingerprint`를 위 값으로 **명시 설정**해야 한다(구성 속성만 바꾸고 방치하면 안 됨).
+- 대안(완전 검증값 그대로 쓰기): system/product 지문 `.../qssi:14/...` 를 그대로 넣어도 되나 device 슬롯이
+  `qssi`(GSI 프로젝트명)라 ro.product.device=gts9wifi와 불일치 → 일관성 위해 `gts9wifi` 슬롯 파생본을 권장.
 
 ### 디스플레이
 - 해상도: **1600 x 2560 px**(11.0" WQXGA). 검증: GSMArena Galaxy Tab S9 사양
@@ -113,8 +132,10 @@ samsung/gts9wifixx/gts9wifi:14/UP1A.231005.007/X710XXU5BYA1:user/release-keys
 - bare `ro.build.fingerprint` 라인은 덤프에 없어 조립값 사용(구성요소는 전부 검증).
 - 카카오톡의 Play Integrity 강제 여부, Waydroid 기본 속성 중 에뮬 신호 범위는 미검증 — 로그인 실패 시 이 두
   축을 먼저 의심.
-- 대체 모델(SM-X700/gts8wifi, SM-X900)의 전체 build.prop은 본 조사에서 공개 덤프로 확보 못함. 필요 시
-  sammobile/samfw에서 해당 PDA로 재수집.
+- 대체 모델 덤프는 tadiphone API로 직접 확인 결과 **gts8wifi/gts8/gts8uwifi/gts8pwifi 모두 HTTP 404(부재)**.
+  SM-X700 등의 전체 build.prop은 미확보 — 필요 시 sammobile/samfw에서 해당 PDA로 재수집.
+- X710 확보 펌웨어는 Android 14 / 보안패치 2024-12-01로 조사 시점(2026-10) 기준 약 2년 구형. 스푸핑 용도로는
+  무방하나(모델 식별이 목적), 최신 패치 지문이 필요하면 samfw에서 최신 X710XXU* PDA로 갱신 가능.
 
 ## 6. 출처 정리
 

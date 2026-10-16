@@ -43,8 +43,8 @@ log "5. tablet device identity (coexist with phone) — profile: $DEVICE_PROFILE
 BASEPROP=/var/lib/waydroid/waydroid_base.prop
 case "$DEVICE_PROFILE" in
   galaxy-tab-s9)
-    # Samsung Galaxy Tab S9 Wi-Fi (SM-X710 / gts9wifi). Fingerprint is a PLACEHOLDER
-    # until confirmed in docs/initiatives/2026-10-16-tablet-fingerprint.md.
+    # Samsung Galaxy Tab S9 Wi-Fi (SM-X710 / gts9wifi), Android 14. Values verified
+    # against the AndroidDumps firmware dump (docs/initiatives/2026-10-16-tablet-fingerprint.md).
     PROPS=(
       "ro.product.manufacturer=samsung"
       "ro.product.brand=samsung"
@@ -53,9 +53,16 @@ case "$DEVICE_PROFILE" in
       "ro.product.device=gts9wifi"
       "ro.build.characteristics=tablet"
       "ro.build.version.release=14"
-      "ro.build.fingerprint=samsung/gts9wifixx/gts9wifi:14/UP1A.231005.007/X710XXU1BXK1:user/release-keys"
+      "ro.build.version.sdk=34"
+      "ro.build.id=UP1A.231005.007"
+      "ro.build.version.incremental=X710XXU5BYA1"
+      "ro.build.description=gts9wifixx-user 14 UP1A.231005.007 X710XXU5BYA1 release-keys"
+      "ro.build.fingerprint=samsung/gts9wifixx/gts9wifi:14/UP1A.231005.007/X710XXU5BYA1:user/release-keys"
+      "ro.sf.lcd_density=340"
     )
-    WIDTH=1600; HEIGHT=2560; DENSITY=287   # sw600dp+ tablet
+    # 1600x2560 @ 340dpi -> smallestWidthDp ~= 753dp (>=600 tablet). Partition-specific
+    # ro.product.{system,vendor,odm}.* should also be aligned; keep ro.product.system.device=qssi.
+    WIDTH=1600; HEIGHT=2560; DENSITY=340
     ;;
   *) echo "unknown DEVICE_PROFILE=$DEVICE_PROFILE" >&2; exit 2 ;;
 esac
