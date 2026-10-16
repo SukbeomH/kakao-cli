@@ -157,3 +157,10 @@
 ### TUI e2e 테스트 (2026-10-16)
 - `tests/e2e_tui.sh [serial]`: tmux PTY에서 TUI 구동→방 로딩 대기→자기채팅 **행 위치 동적 탐색**(방 순서는 수신으로 바뀜)→한글 입력→전송→**디바이스 readback 독립 검증**→종료. 3/3 통과.
 - 과정에서 발견·수정: 채팅목록이 **"Unread" 필터**일 때 부분(4개)만 보임 → open_chats_tab이 **"All" 칩 선택** 보장. list_rooms는 부분 렌더 대비 여러 번 읽어 최대 스냅샷 채택. (Enter는 tmux `C-m`.)
+
+### 로그아웃→재로그인 재검증 (2026-10-16)
+- **로그아웃**: 서브기기 설정 UI에 로그아웃 버튼 없음 → `adb shell pm clear com.kakao.talk`로 세션/데이터 초기화(채팅은 로그인 후 서버 재동기화). 로그인 화면 복귀 확인.
+- **태블릿 지문·IME 영속**: build.prop(컨테이너 prop)·ADBKeyBoard IME(시스템 설정)는 pm clear로 안 지워짐 → "Use with Main Device" 여전히 노출, 한글 입력 유지.
+- **QR 재로그인 주의**: 스캔 후 태블릿에 뜨는 **보안코드(인증번호)를 폰에 입력**하는 단계가 있음. 코드는 금방 만료("The security code has expired") → **QR 자동 새로고침을 이 단계에 돌리면 코드가 재생성돼 어긋남**. 자동 새로고침 끄고, 스캔 후 번호를 즉시 입력해야 함. 번호는 라이브 screencap 페이지로 사용자가 봄.
+- **온보딩 자동화**: Skip and Start→OK→권한 OK→백그라운드 ALLOW, pm grant로 권한 선부여.
+- **재검증**: doctor OK / rooms 13 / memo 한글 전송 verified / TUI e2e PASS 모두 통과.
