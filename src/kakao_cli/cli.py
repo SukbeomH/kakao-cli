@@ -1,9 +1,4 @@
-"""kakao-cli entry point. Commands are thin; safety/automation live in dedicated modules.
-
-Only `doctor` is wired to live adb so far. send/read/watch are declared but gated
-until the automation engine is validated against a real Waydroid device (see
-docs/initiatives/2026-10-16-design.md).
-"""
+"""kakao-cli entry point. Thin commands over the driver; structured JSON output."""
 from __future__ import annotations
 import argparse
 import sys
@@ -12,61 +7,88 @@ from . import __version__, PACKAGE
 from .errors import KakaoError
 from .ioutil import emit
 from . import adb
+from .driver import Driver
 
 
-def _common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--json", action="store_true", help="machine-readable JSON output")
-    p.add_argument("--serial", help="adb device serial")
-    p.add_argument("--connect", dest="addr", help="adb connect target, e.g. 10.0.0.5:5555")
+def _dev(args):
+    return adb.connect(args.serial, args.addr, adb=args.adb)
 
 
 def cmd_doctor(args) -> dict:
-    dev = adb.connect(args.serial, args.addr)
+    dev = _dev(args)
     version = adb.require_app(dev)
-    return {
-        "ok": True,
-        "serial": dev.serial,
-        "package": PACKAGE,
-        "app_version": version,
-        "current_activity": dev.current_activity(),
-    }
+    return {"ok": True, "serial": dev.serial, "package": PACKAGE,
+            "app_version": version, "current_activity": dev.current_activity()}
 
 
-def cmd_notimpl(args) -> dict:
-    raise KakaoError(
-        f"'{args._name}' not implemented yet: needs live Waydroid validation of the "
-        "automation contract (see docs/initiatives/2026-10-16-design.md)"
-    )
+def cmd_rooms(args) -> dict:
+    d = Driver(_dev(args))
+    rooms = d.list_rooms()
+    return {"ok": True, "count": len(rooms), "rooms": rooms}
 
 
-def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="kakao", description="Drive KakaoTalk (Waydroid) over adb")
+def cmd_read(args) -> dict:
+    d = Driver(_dev(args))
+    msgs = d.read_room(args.room, limit=args.limit)
+    return {"ok": True, "room": args.room, "count": len(msgs), "messages": msgs}
+
+
+def cmd_send(args) -> dict:
+    d = Driver(_dev(args))
+    if not args.yes:
+        raise KakaoError("refusing to send without --yes (proposal/approval)",
+                         room=args.room, text=args.text)
+    d.open_room(args.room)
+    result = d.send_in_room(args.text)
+    return {"ok": True, "room": args.room, "text": args.text, "result": result}
+
+
+def cmd_memo(args) -> dict:
+    d = Driver(_dev(args))
+    d.open_self_chat()
+    result = d.send_in_room(args.text)
+    return {"ok": True, "target": "self-chat", "text": args.text, "result": result}
+
+
+def _common(p):
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--serial")
+    p.add_argument("--connect", dest="addr")
+    p.add_argument("--adb", default="adb", help="adb binary path")
+
+
+def build_parser():
+    ap = argparse.ArgumentParser(prog="kakao", description="Drive KakaoTalk (redroid) over adb")
     ap.add_argument("--version", action="version", version=f"kakao-cli {__version__}")
     sub = ap.add_subparsers(dest="command", required=True)
 
-    d = sub.add_parser("doctor", help="check adb, device, app version")
-    _common(d)
-    d.set_defaults(func=cmd_doctor)
-
-    for name, help_ in [
-        ("rooms", "list chat rooms"),
-        ("send", "send a message (proposal/approval by default)"),
-        ("read", "read recent messages"),
-        ("watch", "stream incoming messages (NDJSON)"),
-        ("memo", "send to self-chat (safe test)"),
+    for name, fn, extra in [
+        ("doctor", cmd_doctor, None),
+        ("rooms", cmd_rooms, None),
+        ("read", cmd_read, "read"),
+        ("send", cmd_send, "send"),
+        ("memo", cmd_memo, "memo"),
     ]:
-        sp = sub.add_parser(name, help=help_)
+        sp = sub.add_parser(name)
         _common(sp)
-        sp.set_defaults(func=cmd_notimpl, _name=name)
+        if extra == "read":
+            sp.add_argument("room", nargs="?", default=None)
+            sp.add_argument("--limit", type=int, default=20)
+        elif extra == "send":
+            sp.add_argument("room")
+            sp.add_argument("text")
+            sp.add_argument("--yes", action="store_true", help="actually send")
+        elif extra == "memo":
+            sp.add_argument("text")
+        sp.set_defaults(func=fn)
     return ap
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     as_json = getattr(args, "json", False)
     try:
-        result = args.func(args)
-        emit(result, as_json=as_json)
+        emit(args.func(args), as_json=as_json)
         return 0
     except KakaoError as e:
         emit(e.to_dict(), as_json=as_json)

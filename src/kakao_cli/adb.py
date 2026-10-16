@@ -1,6 +1,10 @@
-"""adb transport layer. Thin wrapper over adbutils; isolates the one dependency."""
+"""adb transport via subprocess. No third-party deps — the control host just needs
+the `adb` binary and a reachable device. Unicode text goes through ADBKeyBoard IME.
+"""
 from __future__ import annotations
 from dataclasses import dataclass
+import subprocess
+import time
 
 from .errors import AdbUnavailable, DeviceNotFound, AppNotInstalled
 from . import PACKAGE
@@ -9,50 +13,82 @@ from . import PACKAGE
 @dataclass
 class Device:
     serial: str
-    _d: object  # adbutils device
+    adb: str = "adb"
 
-    def shell(self, cmd: str, timeout: float = 20.0) -> str:
-        return self._d.shell(cmd, timeout=timeout)
+    def _run(self, args: list[str], timeout: float = 30.0, check: bool = False) -> str:
+        p = subprocess.run([self.adb, "-s", self.serial, *args],
+                           capture_output=True, text=True, timeout=timeout)
+        if check and p.returncode != 0:
+            raise AdbUnavailable(f"adb {' '.join(args)} failed: {p.stderr.strip()}")
+        return p.stdout
+
+    def shell(self, cmd: str, timeout: float = 30.0) -> str:
+        return self._run(["shell", cmd], timeout=timeout)
 
     def app_version(self, package: str = PACKAGE) -> str | None:
-        out = self.shell(f"dumpsys package {package} | grep versionName")
-        for line in out.splitlines():
+        for line in self.shell(f"dumpsys package {package} | grep versionName").splitlines():
             line = line.strip()
             if line.startswith("versionName="):
                 return line.split("=", 1)[1]
         return None
 
     def current_activity(self) -> str | None:
-        out = self.shell("dumpsys activity activities | grep -m1 ResumedActivity")
-        return out.strip() or None
+        out = self.shell("dumpsys activity activities | grep -m1 topResumedActivity")
+        for tok in out.split():
+            if tok.startswith(PACKAGE + "/"):
+                return tok.rstrip("}")
+        return None
 
-    def ui_dump(self) -> str:
-        """Raw UIAutomator XML of the current screen."""
-        return self._d.dump_hierarchy()
+    def dump(self) -> str:
+        """Raw uiautomator XML of the current screen."""
+        self.shell("uiautomator dump /sdcard/kc.xml")
+        return self.shell("cat /sdcard/kc.xml")
+
+    def tap(self, x: int, y: int) -> None:
+        self.shell(f"input tap {x} {y}")
+
+    def back(self) -> None:
+        self.shell("input keyevent 4")
+
+    def type_text(self, text: str) -> None:
+        """Unicode-safe text entry via ADBKeyBoard (must be installed + selected)."""
+        esc = text.replace("\\", "\\\\").replace('"', '\\"')
+        self.shell(f'am broadcast -a ADB_INPUT_TEXT --es msg "{esc}"')
+
+    def clear_text(self) -> None:
+        self.shell("am broadcast -a ADB_CLEAR_TEXT")
+
+    def screencap(self, local_path: str) -> None:
+        with open(local_path, "wb") as f:
+            p = subprocess.run([self.adb, "-s", self.serial, "exec-out", "screencap", "-p"],
+                               stdout=f, timeout=30)
+        if p.returncode != 0:
+            raise AdbUnavailable("screencap failed")
 
 
-def connect(serial: str | None = None, addr: str | None = None) -> Device:
+def list_devices(adb: str = "adb") -> list[str]:
     try:
-        import adbutils
-    except ImportError as e:  # pragma: no cover
-        raise AdbUnavailable("adbutils not installed; run `uv sync`") from e
+        out = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=15).stdout
+    except (FileNotFoundError, subprocess.SubprocessError) as e:
+        raise AdbUnavailable(f"adb not usable: {e}") from e
+    devs = []
+    for line in out.splitlines()[1:]:
+        if "\tdevice" in line:
+            devs.append(line.split("\t")[0])
+    return devs
 
-    client = adbutils.AdbClient()
-    try:
-        if addr:
-            client.connect(addr)
-        devices = client.device_list()
-    except Exception as e:
-        raise AdbUnavailable(f"cannot reach adb server: {e}") from e
 
-    if not devices:
-        raise DeviceNotFound("no adb devices; check `adb connect <vm-ip>:5555`")
+def connect(serial: str | None = None, addr: str | None = None, adb: str = "adb") -> Device:
+    if addr:
+        subprocess.run([adb, "connect", addr], capture_output=True, text=True, timeout=20)
+    devs = list_devices(adb)
+    if not devs:
+        raise DeviceNotFound("no adb devices; check `adb connect <host>:5555`")
     if serial:
-        for d in devices:
-            if d.serial == serial:
-                return Device(d.serial, d)
-        raise DeviceNotFound(f"serial not found: {serial}", available=[d.serial for d in devices])
-    return Device(devices[0].serial, devices[0])
+        if serial not in devs:
+            raise DeviceNotFound(f"serial not found: {serial}", available=devs)
+        return Device(serial, adb)
+    return Device(devs[0], adb)
 
 
 def require_app(dev: Device, package: str = PACKAGE) -> str:

@@ -3,9 +3,7 @@ name = "kakao-cli"
 version = "0.1.0"
 description = "Linux CLI that drives the official KakaoTalk Android app in Waydroid via adb"
 requires-python = ">=3.11"
-dependencies = [
-    "adbutils>=2.8.0",
-]
+dependencies = []  # pure stdlib + external `adb` binary
 
 [project.scripts]
 kakao = "kakao_cli.cli:main"
