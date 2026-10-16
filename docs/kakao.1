@@ -84,7 +84,11 @@ Interactive terminal UI: browse rooms, read live, and send. Tab toggles focus,
 arrows/Enter pick a room, type + Enter sends, q quits.
 .TP
 .B webui
-Serve the same UI in a browser (stdlib HTTP, no deps).
+Serve the same UI in a browser (stdlib HTTP, no deps). The input line's
+.B +
+control attaches a file or image (uploaded, then sent into the open room via
+the same path as
+.BR send-file ).
 .B \-\-host
 (default 127.0.0.1) and
 .B \-\-port

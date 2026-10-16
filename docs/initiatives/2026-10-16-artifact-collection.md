@@ -171,3 +171,12 @@
 - API: `GET /`, `GET /api/state`, `POST /api/open{room}`, `POST /api/send{text}`(방 미오픈=400), `POST /api/rooms`. JSON은 `ensure_ascii=False`+utf-8. 상태 전이는 TUI와 동일(open 시 뷰 비우고 opened 이벤트 전까지 room=None, 타 방 messages 이벤트는 드롭 → 이전 방 로그 깜빡임 방지).
 - **보안**: 기본 `127.0.0.1` 바인드. `--host 0.0.0.0`은 인증 없이 계정 제어를 네트워크에 노출하므로 기동 시 경고 출력 + SSH 터널(`ssh -L`) 권장. v1은 송신/파일전송 미포함(TUI 패리티만). 후속: 파일 업로드→send-file 연동, 토큰 인증 옵션.
 - **검증**: 단위 테스트(스텁 워커로 서버 부팅→페이지·JSON API·한글 send, 7/7 통과). **브라우저 e2e**(`tests/e2e_webui.sh`+`tests/webui_browser.js`, playwright-core+캐시 Chromium): VM 배포→webui 기동→헤드리스 크롬이 페이지 로드(13방)→자기채팅 행 클릭→한글 입력→Enter→상태바 "sent" 확인→**adb readback 독립 검증** PASS. 커밋 a3a600f.
+
+### 웹 UI 파일 전송 (2026-10-16)
+- `webui` 입력줄 왼쪽 **`+`**로 파일/이미지 첨부. 흐름: 브라우저 파일 선택 → `POST /api/sendfile?name=`(raw 바이트, Content-Length만큼 1MiB 청크로 서버 임시파일에 스트리밍—영상 메모리 폭발 방지) → 워커 `("sendfile", path)` → `driver.send_file(self.room, path)` 재사용 → 임시파일 unlink. 전송 후 입력창 없으면 방 재진입 후 폴링(공유 인텐트가 앱을 방 밖에 남길 수 있음).
+- **파일명 새니타이즈**: `_safe_name`이 basename만 취하고 `[^\w.\-]`→`_`(파이썬 `\w`는 한글 보존), 확장자 유지(send_file가 확장자로 이미지/영상 vs 문서 라우팅). send_doc가 파일명을 `am broadcast -d file://` 및 DocumentsUI 검색에 그대로 넣으므로 공백·따옴표·경로구분자 제거 필수.
+- **태블릿 2-pane 발견**: SM-X710 지문이라 자기채팅·일반방 **모두 MainActivity 안에서** 열림(별도 ChatRoomHolderActivity/MemoChatConnectActivity 아님) → 액티비티로 자기채팅 구분 불가. 다만 **공유 피커의 자기채팅 행 desc에 계정명이 포함**(`not selected, me, <계정명>, …`)되어 `send_file(방이름)`이 이미지·문서 모두 매칭 → 자기채팅 특수처리 불필요.
+- **검증**: 단위 2개 추가(바이트 스트리밍+새니타이즈 디스크 기록, 경로탈출 basename화, `_safe_name` 한글 보존) 총 9/9. 브라우저 e2e(`webui_browser.js` FILE 모드 = setInputFiles 숨김 input): 텍스트·문서(zip, readback=파일명)·이미지(png, 공유 피커 경유 status "sent"+state `[Photo]`) 자기채팅 전송.
+- **send_doc 잠복 버그 수정**(문서 전송 중): DocumentsUI 검색창(`search_src_text`)에 파일명을 타이핑하는데, 결과 선택 시 `name in text` 첫 매칭이 **검색창 자체**를 잡아 탭→미선택. 게다가 readback `name in dump`가 그 검색어를 보고 **오탐 "sent"**(실제 전송 안 됨). → 결과 행의 `rid=.../title` 노드를 선택하도록 고치고, readback을 **DocumentsUI 이탈(현재 액티비티가 다시 com.kakao.talk) 확인**으로 교체. 실제 File 말풍선(`…zip … Open File`) 생성 검증.
+- **webui open/send 레이스**: 방 재클릭 시 `want_open`이 room을 잠깐 비우는 틈에 업로드 POST가 400 날 수 있음 → 서버 가드를 `has_target()`(room **또는** pending)으로 완화(명령 큐가 open→sendfile 순서 보장). e2e 파일모드는 open 완료를 기다린 뒤 업로드.
+- v1 범위: 송신만. 수신 미디어 표시는 기존 `[Photo]`/`[Video]` 플레이스홀더(썸네일 렌더 아님) — 후속.
