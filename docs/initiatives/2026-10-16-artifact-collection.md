@@ -141,3 +141,8 @@
 - **send류 --home**: send/memo/send-file에 `--home` 추가 → 송신 후 앱 백그라운드(수신대기/연속 poll 보전용). open_self_chat 3회 재시도로 탐색 안정화(이전 "profile avatar not found" 간헐실패 해결). memo --home 검증(verified + 런처 복귀).
 - **pull-media --new-only**: `<dest>/.seen.json`에 해시 영속 → 증분 수신. 1차 18개, 2차 0개 검증.
 - **문서(pdf/zip) 전송 — 한계 확인**: SEND 핸들러가 application/*을 선언하나, RecentExcludeIntentFilterActivity는 **image/video만 수신자 피커로 라우팅**(app/*, */*, octet-stream 모두 피커 미노출, MainActivity로 빠짐). 앱 내 미디어 시트에도 '파일' 옵션 없음(Camera/Photo/Location/Music/GiftShop/MiniGames). → 문서 전송은 미지원으로 명시(send_file이 명확한 에러). 후속: 파일매니저→Android 공유 시트→KakaoTalk 경로 자동화 조사. 이미지/영상은 정상.
+
+### 문서 전송 해결 + 완성도 고도화 (2026-10-16)
+- **문서(pdf/zip/doc) 전송 성공**: 사용자 힌트대로 입력창 '+' → 시트 스크롤 → "File" → "Select from File" → DocumentsUI(system picker)에서 파일명 검색·선택 → 방 전송. pdf·zip CLI 실전송 검증. send_file이 확장자로 이미지/영상=공유인텐트, 문서=send_doc(파일피커) 라우팅.
+- **ensure_main 견고화**: 이물 foreground(DocumentsUI/다이얼로그) back 복구 + 최후 force-stop 재기동. open_self_chat 간헐 실패 근본 해결.
+- **폴리싱**: 명령별 rich --help(설명·메타바·예시), README.md 종합, docs/kakao.1 man page(경고 0), completions/{kakao.bash,_kakao} bash·zsh 자동완성, pyproject 메타데이터, 테스트 5개(version/help/subhelp/doctor-error/argparse).
