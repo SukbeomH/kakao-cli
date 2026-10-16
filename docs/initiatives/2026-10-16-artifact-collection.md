@@ -125,3 +125,8 @@
 - **send-file(이미지/영상)**: ACTION_SEND 공유 인텐트로 정확한 파일 첨부(content URI, 갤러리권한 불필요) → 수신자 피커(`chat_room_list_item` desc로 이름/me 매칭 선택) → `submit_button`. 자기채팅 이미지 실전송 검증.
 - **pull-media(수신/수집)**: 미디어는 `/sdcard/Android/data/com.kakao.talk/contents/<cat>/<chatId>/<hh>/<sha256>`에 확장자 없는 content-addressed 블롭으로 저장. ext_data_rw로 접근(adb root도 가능). pull 후 매직바이트로 타입판별(jpg/png/gif/mp4/webp). 12개 블롭 pull 검증(chat_id 포함).
 - 후속: pull-media `--new-only`(seen 해시 상태파일) 증분 수신, chat_id↔방이름 매핑, 임의 문서(pdf/zip) 전송(앱 파일피커 경로), watch와 미디어 연관.
+
+### watch 실수신 검증 완료 (2026-10-16)
+- 사용자 폰에서 여러 채팅 전송 → **동기화는 됨**(채팅목록 갱신), 그러나 **앱 포그라운드면 읽음처리로 알림 0건**.
+- **앱 백그라운드(HOME)** 상태에서 수신 알림 정상 발생. 알림 채널 `new_message_v1`(importance 4). parse가 `android.title`(방)·`android.text`(메시지) 추출 검증: 실제 2건 정확 추출, null 요약 알림 필터.
+- 운영 결론: 수신 상시 감지는 **앱 백그라운드** 전제. kakao-boot.sh가 기동 후 HOME으로 수신대기 상태로 둠. send/read는 일시적으로 포그라운드 → 이후 HOME 복귀 필요(후속: send류 종료 시 HOME).

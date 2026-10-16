@@ -39,4 +39,6 @@ done
 # ensure ADBKeyBoard IME (persists in /data, but re-assert defensively)
 adb -s "$SER" shell ime enable com.android.adbkeyboard/.AdbIME >/dev/null 2>&1
 adb -s "$SER" shell ime set com.android.adbkeyboard/.AdbIME >/dev/null 2>&1
+# background the app so incoming messages post notifications (receive-ready)
+adb -s "$SER" shell input keyevent KEYCODE_HOME >/dev/null 2>&1
 log "bring-up complete"

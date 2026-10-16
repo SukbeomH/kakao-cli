@@ -38,9 +38,13 @@ def parse(dump: str) -> list[dict]:
         key = _KEY.search(rec)
         if not text:
             continue
+        room_v = (title.group(1).strip() if title else "")
+        text_v = text.group(1).strip()
+        if text_v in ("null", "") or (room_v == "null" and text_v == "null"):
+            continue  # group/summary notification
         events.append({
-            "room": (title.group(1).strip() if title else ""),
-            "text": text.group(1).strip(),
+            "room": room_v,
+            "text": text_v,
             "when": int(when.group(1)) if when else 0,
             "key": key.group(1) if key else "",
         })
