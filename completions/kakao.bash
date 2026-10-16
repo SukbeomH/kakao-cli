@@ -3,7 +3,7 @@
 _kakao() {
     local cur prev words cword
     _init_completion 2>/dev/null || { cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"; }
-    local cmds="doctor rooms read send memo watch send-file pull-media track poll"
+    local cmds="doctor rooms read send memo watch send-file pull-media track poll tui"
     local common="--json --serial --connect --adb -h --help"
 
     # find the subcommand (first non-option word after 'kakao')

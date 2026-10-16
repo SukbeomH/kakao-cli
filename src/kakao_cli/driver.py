@@ -77,12 +77,21 @@ class Driver:
         # give up silently; caller's _find will surface a precise error
 
     def open_chats_tab(self):
-        self.ensure_main()
-        n = self._find(lambda s: _desc_prefix(s, "Chats tab"), timeout=10)
-        if not n:
-            raise KakaoError("Chats tab not found", activity=self.activity())
-        self.tap_node(n)
-        time.sleep(1.0)
+        last = None
+        for attempt in range(3):
+            try:
+                self.ensure_main()
+                n = self._find(lambda s: _desc_prefix(s, "Chats tab"), timeout=8)
+                if not n:
+                    last = "Chats tab not found"; continue
+                self.tap_node(n); time.sleep(1.0)
+                if self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=6):
+                    return
+                last = "room list not visible"
+            except Exception as e:  # noqa
+                last = str(e)
+            time.sleep(1.0)
+        raise KakaoError(f"open_chats_tab failed: {last}", activity=self.activity())
 
     def _read_room_list(self, s) -> list[dict]:
         rooms = []
@@ -98,12 +107,18 @@ class Driver:
             })
         return rooms
 
-    def list_rooms(self) -> list[dict]:
-        self.open_chats_tab()
-        s = self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=10)
-        if not s:
-            raise KakaoError("room list not found")
-        return self._read_room_list(s)
+    def list_rooms(self, retries: int = 4) -> list[dict]:
+        last = []
+        for _ in range(retries):
+            self.open_chats_tab()
+            s = self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=10)
+            if s:
+                rooms = self._read_room_list(s)
+                if rooms:
+                    return rooms
+                last = rooms
+            time.sleep(1.0)
+        return last
 
     def track(self, interval: float = 5.0, window: int = 10):
         """Poll the chat list; emit each room's newest message when it changes.
@@ -134,13 +149,27 @@ class Driver:
             _t.sleep(interval)
 
     def open_room(self, name: str):
-        self.open_chats_tab()
-        n = self._find(lambda s: s.first(rid=RID["room_name"], text=name), timeout=10)
-        if not n:
-            raise KakaoError(f"room not found: {name}")
-        self.tap_node(n)
-        if not self._screen_where(lambda s: s.first(rid=RID["input"]) is not None, timeout=12):
-            raise KakaoError("chat room did not open", activity=self.activity())
+        def _room(s):
+            for nd in s.all():
+                if nd.rid.endswith("/name") and (nd.text == name or nd.desc == name):
+                    return nd
+            return None
+        last = None
+        for attempt in range(3):
+            try:
+                self.open_chats_tab()
+                n = self._find(_room, timeout=8)
+                if not n:
+                    last = f"room not found: {name}"; continue
+                self.tap_node(n)
+                if self._screen_where(lambda s: s.first(rid=RID["input"]) is not None, timeout=12):
+                    return
+                last = "chat room did not open"
+                self.dev.back(); time.sleep(0.8)
+            except Exception as e:  # noqa
+                last = str(e)
+            time.sleep(1.0)
+        raise KakaoError(f"open_room failed: {last}", activity=self.activity())
 
     def open_self_chat(self):
         last = None

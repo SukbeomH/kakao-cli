@@ -17,7 +17,8 @@ class Device:
 
     def _run(self, args: list[str], timeout: float = 30.0, check: bool = False) -> str:
         p = subprocess.run([self.adb, "-s", self.serial, *args],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL)
         if check and p.returncode != 0:
             raise AdbUnavailable(f"adb {' '.join(args)} failed: {p.stderr.strip()}")
         return p.stdout
@@ -62,7 +63,7 @@ class Device:
     def push(self, local: str, remote: str) -> None:
         import subprocess as _sp
         p = _sp.run([self.adb, "-s", self.serial, "push", local, remote],
-                    capture_output=True, text=True, timeout=120)
+                    capture_output=True, text=True, timeout=120, stdin=_sp.DEVNULL)
         if p.returncode != 0:
             raise AdbUnavailable(f"adb push failed: {p.stderr.strip()}")
 
@@ -99,14 +100,15 @@ class Device:
     def screencap(self, local_path: str) -> None:
         with open(local_path, "wb") as f:
             p = subprocess.run([self.adb, "-s", self.serial, "exec-out", "screencap", "-p"],
-                               stdout=f, timeout=30)
+                               stdout=f, timeout=30, stdin=subprocess.DEVNULL)
         if p.returncode != 0:
             raise AdbUnavailable("screencap failed")
 
 
 def list_devices(adb: str = "adb") -> list[str]:
     try:
-        out = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=15).stdout
+        out = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=15,
+                             stdin=subprocess.DEVNULL).stdout
     except (FileNotFoundError, subprocess.SubprocessError) as e:
         raise AdbUnavailable(f"adb not usable: {e}") from e
     devs = []
@@ -118,7 +120,8 @@ def list_devices(adb: str = "adb") -> list[str]:
 
 def connect(serial: str | None = None, addr: str | None = None, adb: str = "adb") -> Device:
     if addr:
-        subprocess.run([adb, "connect", addr], capture_output=True, text=True, timeout=20)
+        subprocess.run([adb, "connect", addr], capture_output=True, text=True, timeout=20,
+                       stdin=subprocess.DEVNULL)
     devs = list_devices(adb)
     if not devs:
         raise DeviceNotFound("no adb devices; check `adb connect <host>:5555`")

@@ -146,3 +146,10 @@
 - **문서(pdf/zip/doc) 전송 성공**: 사용자 힌트대로 입력창 '+' → 시트 스크롤 → "File" → "Select from File" → DocumentsUI(system picker)에서 파일명 검색·선택 → 방 전송. pdf·zip CLI 실전송 검증. send_file이 확장자로 이미지/영상=공유인텐트, 문서=send_doc(파일피커) 라우팅.
 - **ensure_main 견고화**: 이물 foreground(DocumentsUI/다이얼로그) back 복구 + 최후 force-stop 재기동. open_self_chat 간헐 실패 근본 해결.
 - **폴리싱**: 명령별 rich --help(설명·메타바·예시), README.md 종합, docs/kakao.1 man page(경고 0), completions/{kakao.bash,_kakao} bash·zsh 자동완성, pyproject 메타데이터, 테스트 5개(version/help/subhelp/doctor-error/argparse).
+
+### TUI (2026-10-16)
+- curses 기반 대화형 TUI(`kakao tui`): 방 목록(안읽음 뱃지)+메시지창+입력줄. 백그라운드 워커 스레드가 Driver 소유→기기 접근 직렬화(poll+send+open을 순차 처리), curses 스레드는 렌더·입력만.
+- 한글 폭 계산(east_asian_width), get_wch 유니코드 입력, keypad 방향키, Tab 포커스.
+- **핵심 버그 2개 해결**: (1) `keypad(True)` 누락으로 방향키 미동작, (2) **워커의 adb subprocess가 TTY stdin 상속해 curses 키 입력 탈취** → adb.py 전 호출에 `stdin=DEVNULL`. tmux 자동화 시 Enter는 `C-m`.
+- 탐색 견고화: open_room/open_chats_tab/open_self_chat/ensure_main 재시도 + 이물 foreground(파일선택기/다이얼로그) 복구 + force-stop 폴백. list_rooms는 비면 재시도. open_room 이름매칭을 text OR content-desc로(자기채팅 행은 name이 desc).
+- 검증: tmux PTY에서 방 목록 로드→자기채팅 열기→메시지 표시→한글 입력→전송(디바이스 readback count=1, status "sent (verified)").

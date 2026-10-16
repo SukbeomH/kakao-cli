@@ -120,6 +120,13 @@ def cmd_poll(args) -> int:
     return 0
 
 
+
+def cmd_tui(args) -> int:
+    from . import tui
+    tui.run(serial=args.serial, addr=args.addr, adb=args.adb)
+    return 0
+
+
 _EPILOG = """\
 examples:
   kakao doctor --connect 10.0.0.30:5555     # check the device/app
@@ -146,6 +153,7 @@ _DESC = {
     "pull-media": "Pull media blobs (sent/received) from the app to a local directory.",
     "track": "Poll the whole chat list and emit each room's newest message when it changes.",
     "poll": "Open ONE room and stream its newly-arrived messages (recommended receive).",
+    "tui": "Interactive terminal UI: browse rooms, read live, and send.",
 }
 
 
@@ -177,6 +185,7 @@ def build_parser():
         ("pull-media", cmd_pull_media, "pull-media"),
         ("track", cmd_track, "track"),
         ("poll", cmd_poll, "poll"),
+        ("tui", cmd_tui, "tui"),
     ]:
         sp = sub.add_parser(name, help=_DESC[name], description=_DESC[name])
         _common(sp)

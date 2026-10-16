@@ -13,6 +13,7 @@ _kakao() {
     'pull-media:pull media blobs'
     'track:poll chat list for changes'
     'poll:stream one room (recommended receive)'
+    'tui:interactive terminal UI'
   )
   local common=(
     '--json[machine-readable JSON output]'

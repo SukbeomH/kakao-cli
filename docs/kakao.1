@@ -79,6 +79,10 @@ pulls only blobs not seen before (state in \fIdest\fR/.seen.json).
 Stream incoming messages via OS notifications. The app must be backgrounded for
 notifications to post.
 .TP
+.B tui
+Interactive terminal UI: browse rooms, read live, and send. Tab toggles focus,
+arrows/Enter pick a room, type + Enter sends, q quits.
+.TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
 .SH RECEIVE MODEL

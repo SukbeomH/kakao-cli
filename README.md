@@ -89,6 +89,7 @@ docker run --rm kakao-cli doctor --connect 10.0.0.30:5555
 | `poll <room|me>` | 한 방의 신규 메시지 스트림(권장 수신, NDJSON) |
 | `pull-media <dest> [--new-only]` | 송수신 미디어 수집(증분) |
 | `watch` / `track` | (보조) 알림·전체목록 기반 수신 |
+| `tui` | 대화형 터미널 UI(방 목록·실시간 읽기·전송) |
 
 공통 옵션: `--json`, `--serial`, `--connect HOST:PORT`, `--adb PATH`. 송신류는 `--home`으로
 전송 후 앱을 백그라운드로 보낼 수 있다. 자세한 사용법은 `kakao <command> --help` 또는
@@ -100,6 +101,14 @@ kakao send-file me ./report.pdf --yes      # 문서
 kakao poll me --interval 3                 # 수신 스트림
 kakao pull-media ./inbox --new-only
 ```
+
+### 대화형 TUI
+
+```bash
+kakao tui --connect 10.0.0.30:5555
+```
+방 목록(←안읽음 뱃지) + 메시지 창 + 입력줄. **Tab** 포커스 전환, **↑↓/Enter** 방 선택,
+입력줄에서 타이핑 후 **Enter** 전송(한글 OK), **q** 종료. 단일 기기라 한 번에 한 방을 본다.
 
 ## 수신 모델
 
