@@ -9,6 +9,7 @@ from .ioutil import emit
 from . import adb
 from .driver import Driver
 from . import notify
+from . import media
 
 
 def _dev(args):
@@ -71,6 +72,16 @@ def cmd_send_file(args) -> dict:
     return {"ok": True, "target": args.target, "file": args.file, "result": result}
 
 
+
+def cmd_pull_media(args) -> dict:
+    dev = _dev(args)
+    if getattr(dev, "serial", None):
+        import subprocess
+        subprocess.run([dev.adb, "-s", dev.serial, "root"], capture_output=True, timeout=20)
+    pulled = media.pull_new(dev, args.dest, set())
+    return {"ok": True, "dest": args.dest, "count": len(pulled), "files": pulled}
+
+
 def _common(p):
     p.add_argument("--json", action="store_true")
     p.add_argument("--serial")
@@ -91,6 +102,7 @@ def build_parser():
         ("memo", cmd_memo, "memo"),
         ("watch", cmd_watch, "watch"),
         ("send-file", cmd_send_file, "send-file"),
+        ("pull-media", cmd_pull_media, "pull-media"),
     ]:
         sp = sub.add_parser(name)
         _common(sp)
@@ -109,6 +121,8 @@ def build_parser():
             sp.add_argument("target", help="room name or 'me'")
             sp.add_argument("file")
             sp.add_argument("--yes", action="store_true")
+        elif extra == "pull-media":
+            sp.add_argument("dest")
         sp.set_defaults(func=fn)
     return ap
 

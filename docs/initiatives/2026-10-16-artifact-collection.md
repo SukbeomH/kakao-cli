@@ -120,3 +120,8 @@
 - ACTION_SEND 공유 경로: 명시적 컴포넌트(RecentExcludeIntentFilterActivity) 지정은 MainActivity로 빠짐 → 수신자 피커 진입 액티비티 재확인 필요.
 - 미디어 권한 grant를 kakao-boot.sh에 추가(영속).
 - 남은 작업: 피커 썸네일 선택 UI 정밀 매핑(최신=첫 썸네일 활용) + btn_send로 send-file 명령화; 영상/임의첨부; 수신 파일(알림/스토리지에서 pull) 파이프라인.
+
+### 파일 파이프라인 완성 (2026-10-16)
+- **send-file(이미지/영상)**: ACTION_SEND 공유 인텐트로 정확한 파일 첨부(content URI, 갤러리권한 불필요) → 수신자 피커(`chat_room_list_item` desc로 이름/me 매칭 선택) → `submit_button`. 자기채팅 이미지 실전송 검증.
+- **pull-media(수신/수집)**: 미디어는 `/sdcard/Android/data/com.kakao.talk/contents/<cat>/<chatId>/<hh>/<sha256>`에 확장자 없는 content-addressed 블롭으로 저장. ext_data_rw로 접근(adb root도 가능). pull 후 매직바이트로 타입판별(jpg/png/gif/mp4/webp). 12개 블롭 pull 검증(chat_id 포함).
+- 후속: pull-media `--new-only`(seen 해시 상태파일) 증분 수신, chat_id↔방이름 매핑, 임의 문서(pdf/zip) 전송(앱 파일피커 경로), watch와 미디어 연관.
