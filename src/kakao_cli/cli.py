@@ -62,6 +62,15 @@ def cmd_watch(args) -> int:
     return 0
 
 
+
+def cmd_send_file(args) -> dict:
+    d = Driver(_dev(args))
+    if not args.yes:
+        raise KakaoError("refusing to send without --yes", target=args.target, file=args.file)
+    result = d.send_file(args.target, args.file)
+    return {"ok": True, "target": args.target, "file": args.file, "result": result}
+
+
 def _common(p):
     p.add_argument("--json", action="store_true")
     p.add_argument("--serial")
@@ -81,6 +90,7 @@ def build_parser():
         ("send", cmd_send, "send"),
         ("memo", cmd_memo, "memo"),
         ("watch", cmd_watch, "watch"),
+        ("send-file", cmd_send_file, "send-file"),
     ]:
         sp = sub.add_parser(name)
         _common(sp)
@@ -95,6 +105,10 @@ def build_parser():
             sp.add_argument("text")
         elif extra == "watch":
             sp.add_argument("--interval", type=float, default=3.0)
+        elif extra == "send-file":
+            sp.add_argument("target", help="room name or 'me'")
+            sp.add_argument("file")
+            sp.add_argument("--yes", action="store_true")
         sp.set_defaults(func=fn)
     return ap
 

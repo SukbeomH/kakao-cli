@@ -58,6 +58,37 @@ class Device:
     def clear_text(self) -> None:
         self.shell("am broadcast -a ADB_CLEAR_TEXT")
 
+
+    def push(self, local: str, remote: str) -> None:
+        import subprocess as _sp
+        p = _sp.run([self.adb, "-s", self.serial, "push", local, remote],
+                    capture_output=True, text=True, timeout=120)
+        if p.returncode != 0:
+            raise AdbUnavailable(f"adb push failed: {p.stderr.strip()}")
+
+    def media_content_uri(self, device_path: str, kind: str) -> str | None:
+        """Scan a pushed file into MediaStore and return its content:// URI."""
+        import re as _re, time as _t
+        base = device_path.rsplit("/", 1)[-1]
+        col = "images" if kind == "image" else "video"
+        self.shell(f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE "
+                   f"-d file://{device_path}")
+        for _ in range(10):
+            out = self.shell(f"content query --uri content://media/external/{col}/media "
+                             f"--projection _id:_data")
+            for line in out.splitlines():
+                if base in line:
+                    m = _re.search(r"_id=(\d+)", line)
+                    if m:
+                        return f"content://media/external/{col}/media/{m.group(1)}"
+            _t.sleep(1.0)
+        return None
+
+    def send_intent(self, uri: str, mime: str, component: str) -> None:
+        self.shell(f"am start -a android.intent.action.SEND -t {mime} "
+                   f"--eu android.intent.extra.STREAM {uri} "
+                   f"--grant-read-uri-permission -n {component}")
+
     def screencap(self, local_path: str) -> None:
         with open(local_path, "wb") as f:
             p = subprocess.run([self.adb, "-s", self.serial, "exec-out", "screencap", "-p"],

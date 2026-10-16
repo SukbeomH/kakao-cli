@@ -105,6 +105,50 @@ class Driver:
             raise SendUncertain("sent but could not confirm via readback", text=text)
         return "verified"
 
+
+    SHARE_COMPONENT = "com.kakao.talk/.activity.RecentExcludeIntentFilterActivity"
+
+    def send_file(self, target: str, local_path: str) -> str:
+        """Send an image/video to a room (by name) or self ('me') via ACTION_SEND.
+        Attaches the exact file (content URI) — no gallery permission needed.
+        """
+        import os, time
+        ext = os.path.splitext(local_path)[1].lower()
+        if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            kind, mime, folder = "image", "image/*", "Pictures"
+        elif ext in (".mp4", ".mov", ".mkv", ".webm", ".3gp", ".m4v"):
+            kind, mime, folder = "video", "video/*", "Movies"
+        else:
+            raise KakaoError(f"unsupported file type: {ext}", hint="image/video only")
+        remote = f"/sdcard/{folder}/kc_{int(time.time())}{ext}"
+        self.dev.push(local_path, remote)
+        uri = self.dev.media_content_uri(remote, kind)
+        if not uri:
+            raise KakaoError("could not register file in MediaStore", remote=remote)
+        self.dev.send_intent(uri, mime, self.SHARE_COMPONENT)
+        # recipient picker
+        want = "me" if target.lower() in ("me", "self", "나", "나와의 채팅") else target
+        def finder(s):
+            for n in s.all():
+                if n.rid.endswith("chat_room_list_item"):
+                    d = n.desc
+                    if want == "me" and (", me," in d or d.startswith("not selected, me")):
+                        return n
+                    if want != "me" and want in d:
+                        return n
+            return None
+        row = self._find(finder, timeout=12)
+        if not row:
+            raise KakaoError(f"recipient not found in share picker: {target}")
+        if "not selected" in row.desc:
+            self.tap_node(row); time.sleep(0.6)
+        sub = self._find(lambda s: next((n for n in s.all()
+                         if n.rid.endswith("submit_button") and n.text.strip()), None), timeout=8)
+        if not sub:
+            raise KakaoError("Send button not found in picker")
+        self.tap_node(sub); time.sleep(2.0)
+        return "sent"
+
     def read_room(self, name, limit=20) -> list[str]:
         if name:
             self.open_room(name)
