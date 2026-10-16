@@ -33,7 +33,7 @@ trap cleanup EXIT
 echo "1) deploy modules to VM"
 scp -q "$ROOT/src/kakao_cli/worker.py" "$ROOT/src/kakao_cli/webui.py" \
        "$ROOT/src/kakao_cli/tui.py" "$ROOT/src/kakao_cli/cli.py" \
-       "$ROOT/src/kakao_cli/driver.py" \
+       "$ROOT/src/kakao_cli/driver.py" "$ROOT/src/kakao_cli/adb.py" \
        "$VM:$REMOTE/src/kakao_cli/" || fail "scp failed"
 
 echo "2) start webui on VM (0.0.0.0:$PORT)"
@@ -97,4 +97,20 @@ done
 [ "$img_ok" = 1 ] || fail "image not confirmed ([Photo] not in state)"
 echo "   image OK ([Photo] in state)"
 
-echo "PASS: webui e2e (text + document + image, all device-verified)"
+echo "7) receive the document (click ⤓ → browser download)"
+RZIP="/tmp/kc_recv_${SESS}.zip"; rm -f "$RZIP"
+MATCH=".zip" OUT="$RZIP" SELF_NAME="$SELF_NAME" \
+  node "$ROOT/tests/webui_recv.js" "http://$VM_IP:$PORT" || fail "receive zip failed"
+python3 -c "import sys,zipfile; sys.exit(0 if zipfile.is_zipfile(sys.argv[1]) else 1)" "$RZIP" \
+  || { rm -f "$RZIP"; fail "received file is not a valid zip"; }
+rm -f "$RZIP"; echo "   document received (valid zip)"
+
+echo "8) receive the image (click ⤓ → browser download)"
+RPNG="/tmp/kc_recv_${SESS}.png"; rm -f "$RPNG"
+MATCH="[Photo]" OUT="$RPNG" SELF_NAME="$SELF_NAME" \
+  node "$ROOT/tests/webui_recv.js" "http://$VM_IP:$PORT" || fail "receive image failed"
+python3 -c "import sys; d=open(sys.argv[1],'rb').read(8); sys.exit(0 if d.startswith(b'\x89PNG\r\n\x1a\n') else 1)" "$RPNG" \
+  || { rm -f "$RPNG"; fail "received image is not a valid PNG"; }
+rm -f "$RPNG"; echo "   image received (valid PNG)"
+
+echo "PASS: webui e2e (send+receive: text, document, image — all device-verified)"

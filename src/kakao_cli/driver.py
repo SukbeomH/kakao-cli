@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 
 from .adb import Device
-from .ui import Screen, Node
+from .ui import Screen, Node, _BOUNDS
 from .errors import KakaoError, SendUncertain
 from . import RID
 
@@ -266,26 +266,93 @@ class Driver:
         self.tap_node(sub); time.sleep(2.0)
         return "sent"
 
-    def _messages_on_screen(self, s) -> list[str]:
-        """Ordered messages visible in the open chat room; media -> [Photo]/[Video]."""
+    def _messages_detailed(self, s) -> list[dict]:
+        """Ordered messages in the open room, each a dict:
+        {kind: text|photo|video|file, text, name?(file), bounds?(tappable node)}.
+        Media/file rows carry the bounds of the element to tap for export."""
         out = []
-        rows = s.list_items("chat_log_recycler_list")
-        for row in rows:
-            txt = ""
-            for k in ("message", "text", "text_with_pin"):
-                if row.get(k, "").strip():
-                    txt = row[k].strip(); break
-            if not txt:
-                media = row.get("image", "") or row.get("video", "")
-                if media.strip():
-                    txt = f"[{media.strip()}]"
-            if txt:
-                out.append(txt)
+        conts = [el for el in s.root.iter("node")
+                 if el.get("resource-id", "").endswith("chat_log_recycler_list")]
+        for c in conts:
+            for row in list(c):
+                leafs: dict[str, str] = {}
+                nodes: dict = {}
+                for dd in row.iter("node"):
+                    rid = dd.get("resource-id", "").split("/")[-1]
+                    val = dd.get("text", "") or dd.get("content-desc", "")
+                    if rid and rid not in leafs:
+                        leafs[rid] = val
+                        nodes[rid] = dd
+                if not leafs:
+                    continue
+                if "txt_size" in leafs:                       # file/document
+                    name = (leafs.get("message") or leafs.get("bubble") or "").strip()
+                    b = _bounds_of(nodes.get("bubble") or row)
+                    out.append({"kind": "file", "text": name or "[File]",
+                                "name": name, "bounds": b})
+                elif "image" in leafs:
+                    out.append({"kind": "photo", "text": "[Photo]",
+                                "bounds": _bounds_of(nodes["image"])})
+                elif "video" in leafs:
+                    out.append({"kind": "video", "text": "[Video]",
+                                "bounds": _bounds_of(nodes["video"])})
+                else:
+                    t = ""
+                    for k in ("message", "text", "text_with_pin"):
+                        if leafs.get(k, "").strip():
+                            t = leafs[k].strip(); break
+                    if t:
+                        out.append({"kind": "text", "text": t})
         if not out:  # fallback flat scan (text only)
             for n in s.all():
                 if n.rid.split("/")[-1] in ("message", "text", "text_with_pin") and n.text.strip():
-                    out.append(n.text.strip())
+                    out.append({"kind": "text", "text": n.text.strip()})
         return out
+
+    def _messages_on_screen(self, s) -> list[str]:
+        """Back-compat: just the text of each visible message (media -> [Photo]/[Video])."""
+        return [m["text"] for m in self._messages_detailed(s)]
+
+    # --- receive: export a visible media/file bubble off the device ---
+    KAKAO_SAVE_DIRS = ("/sdcard/Pictures/KakaoTalk", "/sdcard/DCIM/KakaoTalk",
+                       "/sdcard/Movies/KakaoTalk", "/sdcard/Download/KakaoTalk")
+
+    def _kakao_saves(self) -> set[str]:
+        out = self.dev.shell("find %s -type f 2>/dev/null" % " ".join(self.KAKAO_SAVE_DIRS))
+        return {l.strip() for l in out.splitlines() if l.strip()}
+
+    def export_visible(self, bounds) -> str:
+        """Tap a media/file bubble, Save it via the viewer, and return the device
+        path of the newly-saved file. Privacy-safe: only ever touches the bubble
+        the caller points at (in the open room). Re-anchors to the room after."""
+        before = self._kakao_saves()
+        x = (bounds[0] + bounds[2]) // 2
+        y = (bounds[1] + bounds[3]) // 2
+        self.dev.tap(x, y)
+        # viewer (photo or file) exposes a "Save" control
+        def _save(s):
+            for n in s.all():
+                if (n.desc == "Save" or n.text == "Save") and \
+                   (n.bounds[2] - n.bounds[0]) > 10 and n.bounds[1] > 0:
+                    return n
+            return None
+        sv = self._find(_save, timeout=10)
+        if not sv:
+            self.ensure_main()
+            raise KakaoError("media viewer did not open or Save not found")
+        self.tap_node(sv)
+        newp = None
+        end = time.time() + 25
+        while time.time() < end:
+            diff = self._kakao_saves() - before
+            if diff:
+                newp = sorted(diff)[-1]; break
+            time.sleep(0.8)
+        self.dev.back(); time.sleep(0.6)
+        self.ensure_main()
+        if not newp:
+            raise SendUncertain("file saved but not detected on device")
+        return newp
 
     def _open_target(self, name):
         if name and name.lower() in ("me", "self", "나", "나와의 채팅"):
@@ -392,6 +459,11 @@ class Driver:
             raise SendUncertain("document picker did not return to KakaoTalk", file=name)
         time.sleep(1.5)
         return "sent"
+
+
+def _bounds_of(el) -> tuple[int, int, int, int]:
+    m = _BOUNDS.search(el.get("bounds", "[0,0][0,0]"))
+    return tuple(int(v) for v in m.groups()) if m else (0, 0, 0, 0)
 
 
 def _desc_prefix(s: Screen, prefix: str):

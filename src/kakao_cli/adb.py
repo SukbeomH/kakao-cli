@@ -67,6 +67,13 @@ class Device:
         if p.returncode != 0:
             raise AdbUnavailable(f"adb push failed: {p.stderr.strip()}")
 
+    def pull(self, remote: str, local: str) -> None:
+        import subprocess as _sp
+        p = _sp.run([self.adb, "-s", self.serial, "pull", remote, local],
+                    capture_output=True, text=True, timeout=120, stdin=_sp.DEVNULL)
+        if p.returncode != 0:
+            raise AdbUnavailable(f"adb pull failed: {p.stderr.strip()}")
+
     def media_content_uri(self, device_path: str, kind: str) -> str | None:
         """Scan a pushed file into MediaStore and return its content:// URI."""
         import re as _re, time as _t

@@ -171,3 +171,53 @@ def test_webui_safe_name():
     assert _safe_name("a b.pdf") == "a_b.pdf"
     assert _safe_name("사진.jpg") == "사진.jpg"     # Hangul preserved
     assert _safe_name("") == "file"
+
+
+def test_webui_export_and_download(tmp_path):
+    import os
+    import threading
+    import time
+    sys.path.insert(0, "src")
+    from kakao_cli import webui  # noqa: E402
+
+    worker = _StubWorker()
+    httpd = webui.serve(worker, "127.0.0.1", 0)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # export before a room is open -> 400
+        status, _ = _http("POST", base + "/api/export", {"kind": "photo", "rank": 0})
+        assert status == 400
+        worker.events.put(("opened", "me"))
+        _wait_room(base, "me")
+        # request an export; worker gets the command, UI gets an id
+        status, body = _http("POST", base + "/api/export",
+                             {"kind": "file", "rank": 0, "name": "doc.zip"})
+        assert status == 202
+        xid = _json.loads(body)["id"]
+        assert ("export", xid, "file", 0, "doc.zip") in worker.puts
+        # pending until the worker reports a result
+        _c, b = _http("GET", base + "/api/export/" + xid)
+        assert _json.loads(b)["ready"] is False
+        # simulate the worker pulling the file, then poll -> ready + download
+        blob = tmp_path / "pulled.zip"
+        blob.write_bytes(b"PK\x03\x04RECEIVED")
+        worker.events.put(("export_result", {"id": xid, "path": str(blob),
+                                             "name": "doc.zip", "mime": "application/zip"}))
+        token = None
+        for _ in range(50):
+            _c, b = _http("GET", base + "/api/export/" + xid)
+            js = _json.loads(b)
+            if js.get("ready"):
+                token = js["token"]; break
+            time.sleep(0.05)
+        assert token, "export never became ready"
+        # download streams the exact bytes
+        import urllib.request
+        with urllib.request.urlopen(base + "/api/download/" + token, timeout=5) as r:
+            assert r.status == 200
+            assert r.read() == b"PK\x03\x04RECEIVED"
+            assert "attachment" in r.headers.get("Content-Disposition", "")
+    finally:
+        httpd.shutdown()

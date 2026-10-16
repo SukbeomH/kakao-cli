@@ -42,16 +42,48 @@ class State:
         self.rooms: list[dict] = []
         self.room: str | None = None   # confirmed-open room
         self.pending: str | None = None  # room we asked to open
-        self.messages: list[str] = []
+        self.messages: list[dict] = []
         self.status = "starting …"
+        self.exports: dict[str, dict] = {}     # export id -> {ready, token?, name?, error?}
+        self.downloads: dict[str, dict] = {}   # token -> {path, name, mime}
 
     def _bump(self):
         self.seq += 1
 
     def snapshot(self) -> dict:
         with self.lock:
+            # serve messages without device-pixel bounds the browser doesn't need
+            msgs = [{k: v for k, v in m.items() if k != "bounds"}
+                    if isinstance(m, dict) else {"kind": "text", "text": m}
+                    for m in self.messages]
             return {"seq": self.seq, "rooms": self.rooms, "room": self.room,
-                    "messages": self.messages, "status": self.status}
+                    "messages": msgs, "status": self.status}
+
+    def export_pending(self, xid: str):
+        with self.lock:
+            self.exports[xid] = {"ready": False}
+
+    def export_done(self, xid: str, path: str, name: str, mime: str) -> str:
+        import uuid
+        token = uuid.uuid4().hex
+        with self.lock:
+            self.downloads[token] = {"path": path, "name": name, "mime": mime}
+            self.exports[xid] = {"ready": True, "token": token, "name": name, "mime": mime}
+        return token
+
+    def export_failed(self, xid: str, error: str):
+        with self.lock:
+            self.exports[xid] = {"ready": False, "error": error}
+
+    def export_status(self, xid: str) -> dict | None:
+        with self.lock:
+            e = self.exports.get(xid)
+            return dict(e) if e else None
+
+    def download(self, token: str) -> dict | None:
+        with self.lock:
+            d = self.downloads.get(token)
+            return dict(d) if d else None
 
     def has_target(self) -> bool:
         """A room is open, or an open is in flight. Commands queue behind that
@@ -91,7 +123,12 @@ def _pump(worker: Worker, state: State):
             kind, data = worker.events.get(timeout=1.0)
         except queue.Empty:
             continue
-        state.apply(kind, data)
+        if kind == "export_result":
+            state.export_done(data["id"], data["path"], data["name"], data["mime"])
+        elif kind == "export_error":
+            state.export_failed(data["id"], data.get("error", "export failed"))
+        else:
+            state.apply(kind, data)
 
 
 def _safe_name(raw: str) -> str:
@@ -149,8 +186,34 @@ def make_handler(worker: Worker, state: State, tmpdir: str):
                     self.end_headers()
                     return
                 self._json(200, snap)
+            elif path.startswith("/api/export/"):
+                xid = path[len("/api/export/"):]
+                st = state.export_status(xid)
+                if st is None:
+                    return self._json(404, {"error": "unknown export"})
+                self._json(200, st)
+            elif path.startswith("/api/download/"):
+                token = path[len("/api/download/"):]
+                d = state.download(token)
+                if not d or not os.path.exists(d["path"]):
+                    return self._json(404, {"error": "expired"})
+                self._serve_file(d["path"], d["name"], d["mime"])
             else:
                 self._json(404, {"error": "not found"})
+
+        def _serve_file(self, path, name, mime):
+            from urllib.parse import quote
+            with open(path, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "_")
+            self.send_header("Content-Disposition",
+                             "attachment; filename=\"%s\"; filename*=UTF-8''%s"
+                             % (ascii_name, quote(name)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_POST(self):
             if self.path == "/api/open":
@@ -190,6 +253,20 @@ def make_handler(worker: Worker, state: State, tmpdir: str):
                         remaining -= len(chunk)
                 worker.put("sendfile", dest)
                 self._json(200, {"ok": True, "name": safe})
+            elif self.path == "/api/export":
+                if not state.has_target():
+                    return self._json(400, {"error": "no room open"})
+                body = self._read_json()
+                kind = body.get("kind")
+                if kind not in ("photo", "video", "file"):
+                    return self._json(400, {"error": "bad kind"})
+                rank = body.get("rank")
+                name = body.get("name") or ""
+                import uuid
+                xid = uuid.uuid4().hex
+                state.export_pending(xid)
+                worker.put("export", xid, kind, rank if isinstance(rank, int) else -1, name)
+                self._json(202, {"id": xid})
             elif self.path == "/api/rooms":
                 worker.put("rooms")
                 self._json(200, {"ok": True})
@@ -199,10 +276,11 @@ def make_handler(worker: Worker, state: State, tmpdir: str):
     return Handler
 
 
-def serve(worker: Worker, host: str, port: int) -> ThreadingHTTPServer:
+def serve(worker: Worker, host: str, port: int, tmpdir: str = None) -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
-    tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
+    if tmpdir is None:
+        tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     threading.Thread(target=_pump, args=(worker, state), daemon=True).start()
     httpd = ThreadingHTTPServer((host, port), make_handler(worker, state, tmpdir))
     httpd.daemon_threads = True
@@ -211,9 +289,10 @@ def serve(worker: Worker, host: str, port: int) -> ThreadingHTTPServer:
 
 def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800):
     dev = connect(serial, addr, adb=adb)
-    worker = Worker(dev)
+    tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
+    worker = Worker(dev, export_dir=tmpdir)
     worker.start()
-    httpd = serve(worker, host, port)
+    httpd = serve(worker, host, port, tmpdir=tmpdir)
     shown = host if host not in ("0.0.0.0", "") else "<vm-ip>"
     print(f"kakao-cli webui on http://{shown}:{port}  (Ctrl-C to stop)")
     if host in ("0.0.0.0", ""):
@@ -267,6 +346,10 @@ PAGE = r"""<!doctype html>
   .msgs{flex:1 1 auto;overflow-y:auto;padding:6px 12px}
   .msg{white-space:pre-wrap;word-break:break-word;padding:1px 0}
   .msg.media{color:var(--me)}
+  .msg.dl{cursor:pointer}
+  .msg.dl:hover{text-decoration:underline}
+  .msg .dlico{color:var(--accent)}
+  .msg.dl-busy{opacity:.55}
   .inputline{display:flex;align-items:center;padding:4px 12px;
     border-top:1px solid var(--line)}
   .inputline .prompt{color:var(--accent);margin-right:6px}
@@ -332,14 +415,28 @@ function render(){
   if(selEl) selEl.scrollIntoView({block:"nearest"});
   // title
   $("title").textContent = st.room ? ("— "+st.room+" —") : "(select a room)";
-  // messages
+  // messages (text, plus clickable photo/video/file bubbles you can receive)
   const m = $("msgs");
+  m.innerHTML = "";
   if(!st.messages.length){ m.innerHTML = '<div class="empty">—</div>'; }
   else {
-    m.innerHTML = st.messages.map(t=>{
-      const media = /^\[(Photo|Video)\]$/.test(t);
-      return '<div class="msg'+(media?' media':'')+'">'+esc(t)+'</div>';
-    }).join("");
+    const ranks = {};
+    for(const msg of st.messages){
+      const kind = (msg && msg.kind) || "text";
+      const dl = (kind==="photo" || kind==="video" || kind==="file");
+      const div = document.createElement("div");
+      div.className = "msg" + (dl ? " media dl" : "");
+      if(dl){
+        const rank = ranks[kind]||0; ranks[kind] = rank + 1;
+        const label = kind==="file" ? (msg.name || msg.text || "[File]") : msg.text;
+        div.innerHTML = '<span class="dlico">⤓</span> ' + esc(label);
+        div.title = "클릭해서 받기";
+        div.onclick = () => startExport(kind, rank, msg.name||"", div);
+      } else {
+        div.textContent = (msg && msg.text) || "";
+      }
+      m.appendChild(div);
+    }
     m.scrollTop = m.scrollHeight;
   }
   // input focus styling
@@ -355,6 +452,29 @@ function openSel(){
   focus = "input";
   input.focus();
   render();
+}
+
+// receive a media/file bubble: ask the worker to Save it off the device, poll
+// until the pulled file is ready, then trigger the browser download.
+async function startExport(kind, rank, name, el){
+  if(el.classList.contains("dl-busy")) return;
+  el.classList.add("dl-busy");
+  try{
+    const r = await fetch("/api/export", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({kind, rank, name})});
+    if(!r.ok){ el.classList.remove("dl-busy"); return; }
+    const id = (await r.json()).id;
+    for(let i=0;i<90;i++){
+      await new Promise(res=>setTimeout(res, 1000));
+      const s = await fetch("/api/export/"+id);
+      if(!s.ok) continue;
+      const js = await s.json();
+      if(js.ready){ window.location = "/api/download/"+js.token; break; }
+      if(js.error) break;
+    }
+  }catch(e){ /* status reflects worker result via poll */ }
+  el.classList.remove("dl-busy");
 }
 
 async function post(path, body){

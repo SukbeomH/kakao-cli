@@ -14,12 +14,14 @@ class Worker(threading.Thread):
     """Owns the Driver. Commands in, events out — one device op at a time.
 
     Commands (via ``put``):   ("rooms",) ("open", name) ("send", text)
-                              ("sendfile", path) ("quit",)
+                              ("sendfile", path) ("export", id, kind, rank, name)
+                              ("quit",)
     Events (on ``events``):    ("rooms", list) ("status", str) ("opened", name)
-                               ("messages", (room, list))
+                               ("messages", (room, detailed)) ("export_result", dict)
+                               ("export_error", dict)
     """
 
-    def __init__(self, dev, poll_interval=2.5):
+    def __init__(self, dev, poll_interval=2.5, export_dir=None):
         super().__init__(daemon=True)
         from .driver import Driver
         self.d = Driver(dev)
@@ -27,6 +29,8 @@ class Worker(threading.Thread):
         self.events: queue.Queue = queue.Queue()
         self.room: str | None = None
         self.poll_interval = poll_interval
+        self.export_dir = export_dir
+        self.last_detailed: list = []
         self._stop = False
 
     def put(self, *cmd):
@@ -72,6 +76,8 @@ class Worker(threading.Thread):
         elif op == "sendfile":
             if self.room:
                 self._send_file(cmd[1])
+        elif op == "export":
+            self._export(*cmd[1:])
         elif op == "poll":
             if self.room:
                 self._poll_messages()
@@ -99,6 +105,47 @@ class Worker(threading.Thread):
             self.d._open_target(self.room)
         self._poll_messages()
 
+    def _export(self, xid, kind, rank, name):
+        """Save a visible media/file bubble off the device and pull it locally.
+        Matches the requested bubble in a fresh dump (files by name, else by rank
+        among same-kind), taps → Save → diffs the KakaoTalk save dirs → pulls."""
+        import os, time
+        if not self.export_dir:
+            self._emit("export_error", {"id": xid, "error": "exports disabled"})
+            return
+        if not self.room:
+            self._emit("export_error", {"id": xid, "error": "no room open"})
+            return
+        try:
+            self._emit("status", "receiving …")
+            detailed = self.d._messages_detailed(self.d.screen())
+            same = [m for m in detailed if m.get("kind") == kind and m.get("bounds")]
+            target = None
+            if kind == "file" and name:
+                target = next((m for m in same if m.get("name") == name), None)
+            if target is None and isinstance(rank, int) and 0 <= rank < len(same):
+                target = same[rank]
+            if target is None:
+                self._emit("export_error", {"id": xid, "error": "message no longer visible"})
+                return
+            devpath = self.d.export_visible(target["bounds"])
+            base = name or os.path.basename(devpath)
+            local = os.path.join(self.export_dir, "%d_%s" % (int(time.time() * 1000), base))
+            self.d.dev.pull(devpath, local)
+            self._emit("export_result", {"id": xid, "path": local, "name": base,
+                                         "mime": _mime_for(base)})
+            self._emit("status", f"received {base}")
+        except Exception as e:
+            self._emit("export_error", {"id": xid, "error": str(e)})
+        finally:
+            # export navigates through a viewer; re-anchor and refresh the room
+            if self.room:
+                try:
+                    self.d._open_target(self.room)
+                    self._poll_messages()
+                except Exception:
+                    pass
+
     def _refresh_rooms(self):
         self._emit("status", "loading rooms …")
         rooms = self.d.list_rooms()
@@ -106,5 +153,22 @@ class Worker(threading.Thread):
         self._emit("status", f"{len(rooms)} rooms")
 
     def _poll_messages(self):
-        msgs = self.d._messages_on_screen(self.d.screen())
-        self._emit("messages", (self.room, msgs))
+        self.last_detailed = self.d._messages_detailed(self.d.screen())
+        self._emit("messages", (self.room, self.last_detailed))
+
+
+_MIMES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".mkv": "video/x-matroska",
+    ".webm": "video/webm", ".m4v": "video/x-m4v", ".3gp": "video/3gpp",
+    ".pdf": "application/pdf", ".zip": "application/zip", ".txt": "text/plain",
+    ".doc": "application/msword", ".hwp": "application/x-hwp",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel", ".ppt": "application/vnd.ms-powerpoint",
+}
+
+
+def _mime_for(name: str) -> str:
+    import os
+    return _MIMES.get(os.path.splitext(name or "")[1].lower(), "application/octet-stream")

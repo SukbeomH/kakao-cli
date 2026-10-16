@@ -63,7 +63,9 @@ class TUI:
                 elif kind == "messages":
                     room, msgs = data
                     if room == self.cur_room:
-                        self.messages = msgs
+                        # worker emits detailed dicts; the TUI only renders text
+                        self.messages = [m["text"] if isinstance(m, dict) else m
+                                         for m in msgs]
         except queue.Empty:
             pass
         return changed
