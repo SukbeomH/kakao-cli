@@ -89,6 +89,11 @@ Serve the same UI in a browser (stdlib HTTP, no deps). The input line's
 control attaches a file or image (uploaded, then sent into the open room via
 the same path as
 .BR send-file ).
+Received photo/video/file bubbles show a
+.B \[u2913]
+(download) affordance; clicking one drives the app to Save that item to the
+device, pulls it, and serves it to the browser with its original name \[em] only
+ever the visible bubble in the open room (no DB, no chatId guessing).
 .B \-\-host
 (default 127.0.0.1) and
 .B \-\-port

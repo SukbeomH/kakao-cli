@@ -180,3 +180,12 @@
 - **send_doc 잠복 버그 수정**(문서 전송 중): DocumentsUI 검색창(`search_src_text`)에 파일명을 타이핑하는데, 결과 선택 시 `name in text` 첫 매칭이 **검색창 자체**를 잡아 탭→미선택. 게다가 readback `name in dump`가 그 검색어를 보고 **오탐 "sent"**(실제 전송 안 됨). → 결과 행의 `rid=.../title` 노드를 선택하도록 고치고, readback을 **DocumentsUI 이탈(현재 액티비티가 다시 com.kakao.talk) 확인**으로 교체. 실제 File 말풍선(`…zip … Open File`) 생성 검증.
 - **webui open/send 레이스**: 방 재클릭 시 `want_open`이 room을 잠깐 비우는 틈에 업로드 POST가 400 날 수 있음 → 서버 가드를 `has_target()`(room **또는** pending)으로 완화(명령 큐가 open→sendfile 순서 보장). e2e 파일모드는 open 완료를 기다린 뒤 업로드.
 - v1 범위: 송신만. 수신 미디어 표시는 기존 `[Photo]`/`[Video]` 플레이스홀더(썸네일 렌더 아님) — 후속.
+
+### 웹 UI 수신 미디어/파일 다운로드 (2026-10-16)
+- 메시지 창의 사진·영상·파일 말풍선을 **클릭하면 브라우저로 내려받기**. chatId·DB 복호화 없이, **열린 방의 보이는 말풍선만** 다루어 프라이버시 안전(크로스룸 유출 불가).
+- **export-by-tap + before/after diff**: 서버(워커)가 해당 말풍선 bounds를 탭→뷰어의 **Save** 탭→KakaoTalk 저장 디렉터리 diff로 새 파일 포착→pull. 저장 위치 실측: 사진=`/sdcard/Pictures/KakaoTalk/<ts>.png`, 문서=`/sdcard/Download/KakaoTalk/<원본명>.<ext>`(logcat의 MediaProvider 이동 로그로 확인). 탭 후 `ensure_main`+`_open_target`로 방 재진입.
+- **말풍선 분류**(`_messages_detailed`): chat_log 행 leaf rid로 kind 판정 — 파일=`txt_size`(+`bubble`,`message`=파일명), 사진=`image`, 영상=`video`, 그 외 텍스트. 각 미디어/파일에 탭용 bounds 포함. `_messages_on_screen`은 text만 뽑는 얇은 래퍼로 유지(poll/read/TUI 무변경, TUI는 dict→text 매핑).
+- **2-pane 이점**: 방을 열어도 좌측 방목록과 우측 메시지가 한 dump에 공존(앞서 확인). 미디어 node bounds == screencap 좌표계(검증)라 향후 썸네일 인라인도 가능(이번엔 다운로드만).
+- **API**: `POST /api/export{kind,rank,name}`→202 `{id}`; `GET /api/export/<id>`→`{ready,token|error}`; `GET /api/download/<token>`→파일 스트림(`Content-Disposition: attachment; filename*=UTF-8''…`, mime는 확장자 매핑). 워커가 export_dir(webui tmpdir)로 pull. 같은 `(kind,name)`은 이름, 사진/영상은 same-kind 내 rank로 fresh dump에서 재매칭(폴 사이 목록 변동 대비).
+- **검증**: 단위 10개(스텁 워커 export→download 바이트 일치 포함). 브라우저 e2e(`webui_recv.js`, playwright download 이벤트 캡처): 자기채팅에서 송신한 zip·png를 클릭→다운로드→**유효 zip/PNG 바이트 확인**. 전체 e2e(송신 text/문서/이미지 + 수신 문서/이미지) PASS, TUI e2e 회귀 PASS.
+- 후속: 영상 수신(사진과 동일 경로 가정, 실검증 대기), 썸네일 인라인 표시(screencap 크롭), 만료된 말풍선(Expiry 경과) 처리.
