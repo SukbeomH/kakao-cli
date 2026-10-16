@@ -85,3 +85,18 @@
 - Ubuntu 24.04 cloud 이미지 `local:iso/noble-server-cloudimg-amd64.img`(597MB) 다운로드 완료.
 - **VM 108 `waydroid-kakao` 생성**: 4코어/6GB/cpu=host/q35, net0 vmbr0, 정적 IP **192.168.0.30/24 gw .1**, cloud-init(ciuser=agent, CT101 ed25519 키), serial 콘솔. OS 디스크(scsi0) 미부착.
 - **막힌 지점**: 임의 경로 디스크 import는 PVE에서 **root 전용**(`Only root can pass arbitrary filesystem paths`). 토큰은 storage content 변경(Datastore.Allocate)도 불가. → OS 이미지를 디스크에 넣는 1단계만 호스트 root 핸드오프 필요. 이후(scsi0 연결·resize·start·게스트 SSH·Waydroid 설치) 전부 토큰+SSH로 진행 가능.
+
+### VM 108 부팅 & Waydroid 설치 (2026-10-16)
+- root가 `qm disk import` 수행 → 토큰으로 scsi0 연결(discard/ssd), boot=scsi0, 48G 리사이즈, 기동.
+- VM: Ubuntu 24.04.5, 커널 6.8.0-142, 4코어/5.9GB, /dev/kvm 존재, 디스크 46G. SSH `agent@192.168.0.30`(CT101 ed25519 키).
+- **binder 가용 확인(핵심 관문 통과)**: cloud 커널엔 binder 모듈 누락 → `linux-modules-extra-$(uname -r)` 설치 후 `binder_linux` 로드, binderfs 마운트 성공(binder/hwbinder/vndbinder). `/etc/modules-load.d`+`modprobe.d`로 영구화.
+- Waydroid 1.6.2 설치. `waydroid init -s GAPPS` 진행 중(LineageOS 20 GAPPS x86_64 이미지).
+
+### redroid 전환 & 카카오톡 구동 성공 (2026-10-16) ★돌파
+- Waydroid→**redroid(Docker)** 전환. VM 108에 Docker 29.9.1 설치, `redroid/redroid:14.0.0-latest` 구동.
+- 태블릿 스푸핑 인자로 실행: model SM-X710/samsung/gts9wifi/characteristics=tablet, 1600x2560@340. ABI에 arm64-v8a 포함(**libndk ARM 변환 내장 작동**).
+- 카카오톡 26.8.3 split 사이드로드 성공(install-multiple, primaryCpuAbi=arm64-v8a).
+- **앱 정상 실행**(초기 1회 세그폴트는 있었으나 재기동 시 안정), AuthenticatorActivity 로그인 화면 도달.
+- **★서버 allowlist 통과**: 로그인 화면에 "Use with Main Device"(다른 기기와 함께 사용) + `chk_subdevice` 체크박스 노출 → 폰 공존 서브기기 로그인 가능. SM-X710 지문이 먹힘.
+- 로그인 자동화 계약(resource-id): 계정 `account_key>edit_text`, 비번 `password>edit_text`, 공존 체크 `chk_subdevice`, 로그인 `login_kakao_account`, QR 로그인 `signup_kakao_account_with_qr`.
+- 미해결: adb를 제어 호스트(CT101)로 노출(현재 VM 0.0.0.0:5555 매핑). CT101엔 adb 없음 → Docker 클라이언트 또는 adb 설치 필요. 초기 세그폴트 원인(안정성) 추적.
