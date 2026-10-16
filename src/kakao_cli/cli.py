@@ -127,6 +127,13 @@ def cmd_tui(args) -> int:
     return 0
 
 
+def cmd_webui(args) -> int:
+    from . import webui
+    webui.run(serial=args.serial, addr=args.addr, adb=args.adb,
+              host=args.host, port=args.port)
+    return 0
+
+
 _EPILOG = """\
 examples:
   kakao doctor --connect 10.0.0.30:5555     # check the device/app
@@ -136,6 +143,8 @@ examples:
   kakao send-file "Team" ./clip.mp4 --yes    # send image/video/document
   kakao poll me                              # stream new messages from one room (NDJSON)
   kakao pull-media ./inbox --new-only        # pull received media incrementally
+  kakao tui                                  # interactive terminal UI
+  kakao webui --port 8800                    # same UI in a browser (localhost)
 
 Receive model: `poll <room>` opens one room and streams newly-arrived messages
 (text + [Photo]/[Video]); robust, no notification/background dependency. `watch`
@@ -154,6 +163,7 @@ _DESC = {
     "track": "Poll the whole chat list and emit each room's newest message when it changes.",
     "poll": "Open ONE room and stream its newly-arrived messages (recommended receive).",
     "tui": "Interactive terminal UI: browse rooms, read live, and send.",
+    "webui": "Serve the TUI's UI in a browser (stdlib HTTP, localhost by default).",
 }
 
 
@@ -186,6 +196,7 @@ def build_parser():
         ("track", cmd_track, "track"),
         ("poll", cmd_poll, "poll"),
         ("tui", cmd_tui, "tui"),
+        ("webui", cmd_webui, "webui"),
     ]:
         sp = sub.add_parser(name, help=_DESC[name], description=_DESC[name])
         _common(sp)
@@ -218,6 +229,10 @@ def build_parser():
             sp.add_argument("room", help="room name or 'me'")
             sp.add_argument("--interval", type=float, default=3.0, metavar="SEC", help="poll interval (default: 3)")
             sp.add_argument("--limit", type=int, default=10, metavar="N", help="messages to scan per poll (default: 10)")
+        elif extra == "webui":
+            sp.add_argument("--host", default="127.0.0.1", metavar="HOST",
+                            help="bind address (default: 127.0.0.1; 0.0.0.0 exposes it unauthenticated)")
+            sp.add_argument("--port", type=int, default=8800, metavar="PORT", help="TCP port (default: 8800)")
         sp.set_defaults(func=fn)
     return ap
 
