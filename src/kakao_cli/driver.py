@@ -47,19 +47,34 @@ class Driver:
     # --- flows ---
 
     def ensure_main(self, timeout=12.0):
-        """Make sure KakaoTalk is foreground on MainActivity (launch if needed)."""
+        """Make sure KakaoTalk is foreground on MainActivity (launch if needed).
+        Recovers from a foreign foreground (system file picker, dialog) and, as a
+        last resort, force-stops and relaunches the app."""
         import time as _t
-        act = self.activity()
-        if act and act.endswith("main.MainActivity"):
-            return
-        self.dev.shell("am start -n com.kakao.talk/.activity.SplashActivity")
-        end = _t.time() + timeout
-        while _t.time() < end:
+
+        def _at_main():
             a = self.activity()
-            if a and a.endswith("main.MainActivity"):
-                _t.sleep(0.8)
-                return
-            _t.sleep(0.6)
+            return bool(a and a.endswith("main.MainActivity"))
+
+        if _at_main():
+            return
+        # dismiss any non-KakaoTalk foreground (e.g. DocumentsUI picker) or dialog
+        for _ in range(4):
+            fg = self.dev.shell("dumpsys activity activities | grep -m1 topResumedActivity")
+            if "com.kakao.talk" in fg:
+                break
+            self.dev.back(); _t.sleep(0.6)
+        for restart in (False, True):
+            if restart:
+                self.dev.shell("am force-stop com.kakao.talk"); _t.sleep(1.5)
+            self.dev.shell("am start -n com.kakao.talk/.activity.SplashActivity")
+            end = _t.time() + timeout
+            while _t.time() < end:
+                if _at_main():
+                    _t.sleep(0.8)
+                    return
+                _t.sleep(0.6)
+        # give up silently; caller's _find will surface a precise error
 
     def open_chats_tab(self):
         self.ensure_main()
@@ -185,11 +200,7 @@ class Driver:
         elif ext in (".mp4", ".mov", ".mkv", ".webm", ".3gp", ".m4v"):
             kind, mime, folder = "video", "video/*", "Movies"
         else:
-            raise KakaoError(
-                f"document send not supported yet for {ext}",
-                hint="KakaoTalk routes only image/video through the share recipient picker; "
-                     "pdf/zip/doc need the in-app File flow (not exposed in this build). "
-                     "Images and videos work.")
+            return self.send_doc(target, local_path)
         remote = f"/sdcard/{folder}/kc_{int(time.time())}{ext}"
         self.dev.push(local_path, remote)
         uri = self.dev.media_content_uri(remote, kind)
@@ -285,11 +296,61 @@ class Driver:
             _t.sleep(interval)
 
 
+    def send_doc(self, target, local_path) -> str:
+        """Send an arbitrary document (pdf/zip/doc/...) to a room via the in-room
+        '+' -> File -> Select from File -> system file picker. Returns 'sent'."""
+        import os, time
+        name = f"kcdoc_{int(time.time())}_{os.path.basename(local_path)}"
+        remote = f"/sdcard/Download/{name}"
+        self.dev.push(local_path, remote)
+        self.dev.shell(f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://{remote}")
+        self._open_target(target)
+        if not self._screen_where(lambda s: s.first(rid=RID["input"]) is not None, timeout=10):
+            raise KakaoError("chat room not open", room=target)
+        # open the '+' media sheet
+        plus = self.screen().first(rid="com.kakao.talk:id/media_send_layout")
+        if not plus:
+            raise KakaoError("'+' button not found")
+        self.tap_node(plus); time.sleep(1.5)
+        # scroll the sheet to reveal 'File', then tap it
+        fnode = None
+        for _ in range(4):
+            fnode = next((n for n in self.screen().all() if n.desc == "File" or n.text == "File"), None)
+            if fnode:
+                break
+            self.dev.shell("input swipe 800 2300 800 1400 400"); time.sleep(0.8)
+        if not fnode:
+            raise KakaoError("'File' option not found in + sheet")
+        self.tap_node(fnode); time.sleep(1.5)
+        # 'Select from File' -> system picker
+        sel = self._find(lambda s: s.first(text="Select from File"), timeout=6)
+        if not sel:
+            raise KakaoError("'Select from File' not found")
+        self.tap_node(sel); time.sleep(2.0)
+        # DocumentsUI: find our file by name (search for robustness)
+        srch = self._find(lambda s: next((n for n in s.all()
+                        if n.rid.endswith("option_menu_search")), None), timeout=8)
+        if srch:
+            self.tap_node(srch); time.sleep(1.0)
+            self.dev.type_text(name); time.sleep(1.5)
+        item = self._find(lambda s: next((n for n in s.all() if name in n.desc or name in n.text), None), timeout=10)
+        if not item:
+            self.dev.back(); time.sleep(0.5); self.dev.back()  # dismiss picker
+            raise KakaoError("file not found in picker", file=name)
+        self.tap_node(item); time.sleep(2.5)
+        # readback: a File bubble for our doc
+        if not _poll(lambda: name in self.dev.dump(), timeout=8):
+            raise SendUncertain("document sent but not confirmed via readback", file=name)
+        return "sent"
+
+
 def _desc_prefix(s: Screen, prefix: str):
     for n in s.all():
         if n.desc.startswith(prefix):
             return n
     return None
+
+
 
 
 def _desc(s: Screen, desc: str):
@@ -322,3 +383,4 @@ def _poll(pred, timeout=6.0, interval=0.6) -> bool:
             return True
         time.sleep(interval)
     return False
+
