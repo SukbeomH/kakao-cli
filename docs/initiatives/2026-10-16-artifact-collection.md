@@ -108,3 +108,9 @@
 - **나와의 채팅(안전 전송 대상)**: Friends탭 → 상단 내 아바타 → "My Chatroom".
 - **실제 전송+readback 검증 성공**: 자기채팅에 ASCII 테스트 메시지 전송 후 XML readback으로 확인(READBACK-OK). 전 파이프라인 작동.
 - TODO: 한글/유니코드 입력은 `adb shell input text`로 불가 → ADBKeyBoard IME 필요. 제어는 VM에서 직접(CT101 adb 없음).
+
+### 수신 watch / 재부팅 자동기동 (2026-10-16)
+- watch: `dumpsys notification --noredact` 파서(notify.py)로 수신 이벤트 NDJSON. 자기발신 미알림→수신전용. 실수신 검증은 폰 테스트 메시지 필요.
+- read 보정: message/text/text_with_pin 노드 수집(연속 전송은 말풍선 병합되어 합쳐질 수 있음).
+- **재부팅 자동기동**: 커널 업데이트(6.8.0-142→147)로 binder 모듈 유실 → `linux-modules-extra-$(uname -r)` 필요. systemd `kakao-redroid.service` + `/usr/local/bin/kakao-boot.sh`가 binder 로드·binderfs 마운트·컨테이너 start(restart=no, systemd 소유)·앱 기동(콜드스타트 세그폴트 재시도)·IME 재확인. 컨테이너 /data 볼륨으로 **로그인·IME·권한 영속**(재로그인 불필요). 재부팅 2회로 완전 자동복구 검증 완료.
+- TODO(요구 추가): 첨부/이미지/영상 파일 송수신 파이프라인.

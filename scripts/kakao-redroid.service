@@ -1,0 +1,15 @@
+[Unit]
+Description=KakaoTalk redroid substrate (binder + container + app)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/kakao-boot.sh
+ExecStop=/usr/bin/docker stop redroid
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
