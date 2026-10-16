@@ -45,27 +45,78 @@ class Driver:
         return self.dev.current_activity()
 
     # --- flows ---
+
+    def ensure_main(self, timeout=12.0):
+        """Make sure KakaoTalk is foreground on MainActivity (launch if needed)."""
+        import time as _t
+        act = self.activity()
+        if act and act.endswith("main.MainActivity"):
+            return
+        self.dev.shell("am start -n com.kakao.talk/.activity.SplashActivity")
+        end = _t.time() + timeout
+        while _t.time() < end:
+            a = self.activity()
+            if a and a.endswith("main.MainActivity"):
+                _t.sleep(0.8)
+                return
+            _t.sleep(0.6)
+
     def open_chats_tab(self):
-        n = self._find(lambda s: _desc(s, "Chats tab"), timeout=10)
+        self.ensure_main()
+        n = self._find(lambda s: _desc_prefix(s, "Chats tab"), timeout=10)
         if not n:
             raise KakaoError("Chats tab not found", activity=self.activity())
         self.tap_node(n)
         time.sleep(1.0)
+
+    def _read_room_list(self, s) -> list[dict]:
+        rooms = []
+        for r in s.list_items("recycler_view"):
+            if "name" not in r:
+                continue
+            rooms.append({
+                "name": r.get("name", ""),
+                "last_message": r.get("message", ""),
+                "time": r.get("time", ""),
+                "members_count": r.get("members_count", ""),
+                "unread": int(r["unread_count"]) if r.get("unread_count", "").isdigit() else 0,
+            })
+        return rooms
 
     def list_rooms(self) -> list[dict]:
         self.open_chats_tab()
         s = self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=10)
         if not s:
             raise KakaoError("room list not found")
-        rooms = []
-        for name in s.find(rid=RID["room_name"]):
-            y = name.bounds[1]
-            msg = _nearest(s.find(rid=RID["room_last_message"]), y)
-            tm = _nearest(s.find(rid=RID["room_time"]), y)
-            rooms.append({"name": name.text,
-                          "last_message": msg.text if msg else "",
-                          "time": tm.text if tm else ""})
-        return rooms
+        return self._read_room_list(s)
+
+    def track(self, interval: float = 5.0, window: int = 10):
+        """Poll the chat list; emit each room's newest message when it changes.
+        No notification/background dependency; catches muted chats too. Only the
+        latest message per room per poll is seen (bursts between polls collapse)."""
+        import time as _t
+        self.open_chats_tab()
+        seen: dict = {}      # room -> (last_message, time)
+        recent: list = []    # rolling window of recent emitted events
+        primed = False
+        while True:
+            try:
+                s = self.screen()
+                for r in self._read_room_list(s):
+                    key = r["name"]
+                    sig = (r["last_message"], r["time"])
+                    if seen.get(key) != sig and r["last_message"]:
+                        seen[key] = sig
+                        if primed:
+                            ev = {"room": r["name"], "text": r["last_message"],
+                                  "time": r["time"], "unread": r["unread"]}
+                            recent.append(ev)
+                            del recent[:-window]
+                            yield ev
+                primed = True
+            except Exception as e:
+                yield {"_error": str(e)}
+            _t.sleep(interval)
 
     def open_room(self, name: str):
         self.open_chats_tab()
@@ -77,7 +128,8 @@ class Driver:
             raise KakaoError("chat room did not open", activity=self.activity())
 
     def open_self_chat(self):
-        fn = self._find(lambda s: _desc(s, "Friends tab"), timeout=10)
+        self.ensure_main()
+        fn = self._find(lambda s: _desc_prefix(s, "Friends tab"), timeout=10)
         if fn:
             self.tap_node(fn); time.sleep(0.8)
         av = self._find(lambda s: _desc_contains(s, "Profile photo"), timeout=8)
@@ -149,18 +201,77 @@ class Driver:
         self.tap_node(sub); time.sleep(2.0)
         return "sent"
 
-    def read_room(self, name, limit=20) -> list[str]:
-        if name:
+    def _messages_on_screen(self, s) -> list[str]:
+        """Ordered messages visible in the open chat room; media -> [Photo]/[Video]."""
+        out = []
+        rows = s.list_items("chat_log_recycler_list")
+        for row in rows:
+            txt = ""
+            for k in ("message", "text", "text_with_pin"):
+                if row.get(k, "").strip():
+                    txt = row[k].strip(); break
+            if not txt:
+                media = row.get("image", "") or row.get("video", "")
+                if media.strip():
+                    txt = f"[{media.strip()}]"
+            if txt:
+                out.append(txt)
+        if not out:  # fallback flat scan (text only)
+            for n in s.all():
+                if n.rid.split("/")[-1] in ("message", "text", "text_with_pin") and n.text.strip():
+                    out.append(n.text.strip())
+        return out
+
+    def _open_target(self, name):
+        if name and name.lower() in ("me", "self", "나", "나와의 채팅"):
+            self.open_self_chat()
+        elif name:
             self.open_room(name)
+
+    def read_room(self, name, limit=20) -> list[str]:
+        self._open_target(name)
         s = self._screen_where(lambda s: s.first(rid=RID["chat_log"]) is not None, timeout=10)
         if not s:
             raise KakaoError("chat log not found")
-        texts = []
-        for n in s.all():
-            k = n.rid.split("/")[-1]
-            if k in ("message", "text", "text_with_pin") and n.text.strip():
-                texts.append(n.text.strip())
-        return texts[-limit:]
+        return self._messages_on_screen(s)[-limit:]
+
+    def poll_room(self, name, interval: float = 3.0, limit: int = 10):
+        """Open ONE room and poll its visible messages; emit newly-appended messages
+        as they arrive. Reliable (single room, foreground), no notification/background
+        dependency. The room stays focused (incoming messages are marked read)."""
+        import time as _t
+        self._open_target(name)
+        if not self._screen_where(lambda s: s.first(rid=RID["chat_log"]) is not None, timeout=10):
+            raise KakaoError("chat log not found", room=name)
+        prev_bottom = None
+        primed = False
+        while True:
+            try:
+                cur = self._messages_on_screen(self.screen())[-limit:]
+                if cur:
+                    if not primed:
+                        prev_bottom = cur[-1]; primed = True
+                    else:
+                        # new = messages appended after the previous bottom
+                        if prev_bottom in cur:
+                            idx = len(cur) - 1 - cur[::-1].index(prev_bottom)
+                            new = cur[idx + 1:]
+                        else:
+                            new = cur  # view refreshed/scrolled
+                        for m in new:
+                            yield {"room": name, "text": m}
+                        if new:
+                            prev_bottom = cur[-1]
+            except Exception as e:
+                yield {"_error": str(e)}
+            _t.sleep(interval)
+
+
+def _desc_prefix(s: Screen, prefix: str):
+    for n in s.all():
+        if n.desc.startswith(prefix):
+            return n
+    return None
 
 
 def _desc(s: Screen, desc: str):

@@ -82,6 +82,26 @@ def cmd_pull_media(args) -> dict:
     return {"ok": True, "dest": args.dest, "count": len(pulled), "files": pulled}
 
 
+
+def cmd_track(args) -> int:
+    import json, sys
+    d = Driver(_dev(args))
+    for ev in d.track(interval=args.interval, window=args.window):
+        json.dump(ev, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n"); sys.stdout.flush()
+    return 0
+
+
+
+def cmd_poll(args) -> int:
+    import json, sys
+    d = Driver(_dev(args))
+    for ev in d.poll_room(args.room, interval=args.interval, limit=args.limit):
+        json.dump(ev, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n"); sys.stdout.flush()
+    return 0
+
+
 def _common(p):
     p.add_argument("--json", action="store_true")
     p.add_argument("--serial")
@@ -103,6 +123,8 @@ def build_parser():
         ("watch", cmd_watch, "watch"),
         ("send-file", cmd_send_file, "send-file"),
         ("pull-media", cmd_pull_media, "pull-media"),
+        ("track", cmd_track, "track"),
+        ("poll", cmd_poll, "poll"),
     ]:
         sp = sub.add_parser(name)
         _common(sp)
@@ -123,6 +145,13 @@ def build_parser():
             sp.add_argument("--yes", action="store_true")
         elif extra == "pull-media":
             sp.add_argument("dest")
+        elif extra == "track":
+            sp.add_argument("--interval", type=float, default=5.0)
+            sp.add_argument("--window", type=int, default=10)
+        elif extra == "poll":
+            sp.add_argument("room", help="room name or 'me'")
+            sp.add_argument("--interval", type=float, default=3.0)
+            sp.add_argument("--limit", type=int, default=10)
         sp.set_defaults(func=fn)
     return ap
 

@@ -78,3 +78,25 @@ class Screen:
                 return True
             cur = self._parent.get(cur)
         return False
+
+    def list_items(self, container_suffix: str) -> list[dict]:
+        """Return each direct-child row of a container (e.g. recycler_view) as a dict
+        of {leaf_resource_id: text_or_desc}, preserving row grouping."""
+        containers = [el for el in self.root.iter("node")
+                      if el.get("resource-id", "").endswith(container_suffix)]
+        rows = []
+        for c in containers:
+            for row in list(c):  # direct children = recycler items
+                fields: dict[str, str] = {}
+                b = _BOUNDS.search(row.get("bounds", "[0,0][0,0]"))
+                for d in row.iter("node"):
+                    rid = d.get("resource-id", "").split("/")[-1]
+                    val = d.get("text", "") or d.get("content-desc", "")
+                    if rid and val and rid not in fields:
+                        fields[rid] = val
+                if fields:
+                    if b:
+                        g = tuple(int(v) for v in b.groups())
+                        fields["_center"] = ((g[0] + g[2]) // 2, (g[1] + g[3]) // 2)
+                    rows.append(fields)
+        return rows
