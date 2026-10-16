@@ -8,6 +8,7 @@ from .errors import KakaoError
 from .ioutil import emit
 from . import adb
 from .driver import Driver
+from . import notify
 
 
 def _dev(args):
@@ -50,6 +51,17 @@ def cmd_memo(args) -> dict:
     return {"ok": True, "target": "self-chat", "text": args.text, "result": result}
 
 
+
+
+def cmd_watch(args) -> int:
+    import json, sys
+    dev = _dev(args)
+    for ev in notify.watch(dev, interval=args.interval):
+        json.dump(ev, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n"); sys.stdout.flush()
+    return 0
+
+
 def _common(p):
     p.add_argument("--json", action="store_true")
     p.add_argument("--serial")
@@ -68,6 +80,7 @@ def build_parser():
         ("read", cmd_read, "read"),
         ("send", cmd_send, "send"),
         ("memo", cmd_memo, "memo"),
+        ("watch", cmd_watch, "watch"),
     ]:
         sp = sub.add_parser(name)
         _common(sp)
@@ -80,6 +93,8 @@ def build_parser():
             sp.add_argument("--yes", action="store_true", help="actually send")
         elif extra == "memo":
             sp.add_argument("text")
+        elif extra == "watch":
+            sp.add_argument("--interval", type=float, default=3.0)
         sp.set_defaults(func=fn)
     return ap
 
@@ -88,7 +103,10 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     as_json = getattr(args, "json", False)
     try:
-        emit(args.func(args), as_json=as_json)
+        result = args.func(args)
+        if isinstance(result, int):
+            return result
+        emit(result, as_json=as_json)
         return 0
     except KakaoError as e:
         emit(e.to_dict(), as_json=as_json)

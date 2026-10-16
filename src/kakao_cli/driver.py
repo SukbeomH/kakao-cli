@@ -111,8 +111,12 @@ class Driver:
         s = self._screen_where(lambda s: s.first(rid=RID["chat_log"]) is not None, timeout=10)
         if not s:
             raise KakaoError("chat log not found")
-        msgs = [n.text for n in s.find(rid=RID["room_last_message"]) if n.text]
-        return msgs[-limit:]
+        texts = []
+        for n in s.all():
+            k = n.rid.split("/")[-1]
+            if k in ("message", "text", "text_with_pin") and n.text.strip():
+                texts.append(n.text.strip())
+        return texts[-limit:]
 
 
 def _desc(s: Screen, desc: str):
