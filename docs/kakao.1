@@ -83,6 +83,16 @@ notifications to post.
 Interactive terminal UI: browse rooms, read live, and send. Tab toggles focus,
 arrows/Enter pick a room, type + Enter sends, q quits.
 .TP
+.B webui
+Serve the same UI in a browser (stdlib HTTP, no deps).
+.B \-\-host
+(default 127.0.0.1) and
+.B \-\-port
+(default 8800) bind the server; the keymap mirrors
+.BR tui .
+.B \-\-host 0.0.0.0
+exposes account control unauthenticated \[em] prefer an SSH tunnel.
+.TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
 .SH RECEIVE MODEL

@@ -164,3 +164,10 @@
 - **QR 재로그인 주의**: 스캔 후 태블릿에 뜨는 **보안코드(인증번호)를 폰에 입력**하는 단계가 있음. 코드는 금방 만료("The security code has expired") → **QR 자동 새로고침을 이 단계에 돌리면 코드가 재생성돼 어긋남**. 자동 새로고침 끄고, 스캔 후 번호를 즉시 입력해야 함. 번호는 라이브 screencap 페이지로 사용자가 봄.
 - **온보딩 자동화**: Skip and Start→OK→권한 OK→백그라운드 ALLOW, pm grant로 권한 선부여.
 - **재검증**: doctor OK / rooms 13 / memo 한글 전송 verified / TUI e2e PASS 모두 통과.
+
+### 웹 UI (2026-10-16)
+- `kakao webui`: TUI와 **동일한 톤앤매너**(모노스페이스·다크·역상 바, 좌측 방목록+안읽음 뱃지 / 우측 메시지창+"— room —" 타이틀 / "> " 입력줄 / 역상 상태바)를 브라우저로. 키맵도 동일(Tab 포커스, ↑↓/Enter 방선택, Enter 전송, Esc 목록, r 새로고침).
+- **제3자 의존 0**: stdlib `http.server`(ThreadingHTTPServer)만 사용, HTML/CSS/JS는 PAGE 문자열로 메모리 서빙(CDN 없음). TUI의 `Worker`를 `worker.py`로 분리해 tui·webui가 공유 → 단일 워커가 Driver 소유·기기 접근 직렬화. HTTP 핸들러는 큐에 명령만 push, 브라우저는 1초마다 `/api/state?since=N` 폴링(워커가 2.5s마다 갱신, 204로 무변경 스킵).
+- API: `GET /`, `GET /api/state`, `POST /api/open{room}`, `POST /api/send{text}`(방 미오픈=400), `POST /api/rooms`. JSON은 `ensure_ascii=False`+utf-8. 상태 전이는 TUI와 동일(open 시 뷰 비우고 opened 이벤트 전까지 room=None, 타 방 messages 이벤트는 드롭 → 이전 방 로그 깜빡임 방지).
+- **보안**: 기본 `127.0.0.1` 바인드. `--host 0.0.0.0`은 인증 없이 계정 제어를 네트워크에 노출하므로 기동 시 경고 출력 + SSH 터널(`ssh -L`) 권장. v1은 송신/파일전송 미포함(TUI 패리티만). 후속: 파일 업로드→send-file 연동, 토큰 인증 옵션.
+- **검증**: 단위 테스트(스텁 워커로 서버 부팅→페이지·JSON API·한글 send, 7/7 통과). **브라우저 e2e**(`tests/e2e_webui.sh`+`tests/webui_browser.js`, playwright-core+캐시 Chromium): VM 배포→webui 기동→헤드리스 크롬이 페이지 로드(13방)→자기채팅 행 클릭→한글 입력→Enter→상태바 "sent" 확인→**adb readback 독립 검증** PASS. 커밋 a3a600f.
