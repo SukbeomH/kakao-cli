@@ -32,6 +32,10 @@ for t in 1 2 3; do
   a=$(adb -s "$SER" shell dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity | grep -oE 'com.kakao.talk/[^ }]+')
   [ -n "$a" ] && { log "app foreground: $a"; break; }
 done
+# ensure runtime permissions used by automation (notifications + media send/recv)
+for P in POST_NOTIFICATIONS READ_MEDIA_IMAGES READ_MEDIA_VIDEO READ_MEDIA_VISUAL_USER_SELECTED READ_CONTACTS; do
+  adb -s "$SER" shell pm grant com.kakao.talk android.permission.$P >/dev/null 2>&1
+done
 # ensure ADBKeyBoard IME (persists in /data, but re-assert defensively)
 adb -s "$SER" shell ime enable com.android.adbkeyboard/.AdbIME >/dev/null 2>&1
 adb -s "$SER" shell ime set com.android.adbkeyboard/.AdbIME >/dev/null 2>&1

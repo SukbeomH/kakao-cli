@@ -114,3 +114,9 @@
 - read 보정: message/text/text_with_pin 노드 수집(연속 전송은 말풍선 병합되어 합쳐질 수 있음).
 - **재부팅 자동기동**: 커널 업데이트(6.8.0-142→147)로 binder 모듈 유실 → `linux-modules-extra-$(uname -r)` 필요. systemd `kakao-redroid.service` + `/usr/local/bin/kakao-boot.sh`가 binder 로드·binderfs 마운트·컨테이너 start(restart=no, systemd 소유)·앱 기동(콜드스타트 세그폴트 재시도)·IME 재확인. 컨테이너 /data 볼륨으로 **로그인·IME·권한 영속**(재로그인 불필요). 재부팅 2회로 완전 자동복구 검증 완료.
 - TODO(요구 추가): 첨부/이미지/영상 파일 송수신 파이프라인.
+
+### 파일 파이프라인 — 진행 (2026-10-16)
+- 전송 메커니즘 검증: `adb push`→MediaStore 등록(MEDIA_SCANNER_SCAN_FILE)→카카오톡 미디어 권한(READ_MEDIA_IMAGES/VIDEO, **부여+앱재시작 필요**) 후 방 내부 미디어버튼(`media_send_layout`)→피커(bottom sheet: `rv_media` 썸네일, `btn_send`). 권한 없으면 "No access allowed to photos".
+- ACTION_SEND 공유 경로: 명시적 컴포넌트(RecentExcludeIntentFilterActivity) 지정은 MainActivity로 빠짐 → 수신자 피커 진입 액티비티 재확인 필요.
+- 미디어 권한 grant를 kakao-boot.sh에 추가(영속).
+- 남은 작업: 피커 썸네일 선택 UI 정밀 매핑(최신=첫 썸네일 활용) + btn_send로 send-file 명령화; 영상/임의첨부; 수신 파일(알림/스토리지에서 pull) 파이프라인.
