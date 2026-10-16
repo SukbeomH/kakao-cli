@@ -79,3 +79,9 @@
 - 기존 폰과 동시 사용하려면 Waydroid가 **태블릿/서브기기**로 인식돼야 함(아니면 폰 로그아웃).
 - 카카오톡 태블릿 공존은 **갤럭시탭 allowlist를 서버가 게이트**. dex 근거: `sub_device`/`subDevice`/`SUB_DEVICE`, `isTablet`, `deviceType`, `useSub`, `companion`, 모델 `SM-T230`/`SM-T580`/`SM-X900`. "다른 기기와 함께" 문구는 코드에 없음(서버 판정).
 - 대응: Waydroid build.prop을 허용 갤럭시탭으로 스푸핑 + characteristics=tablet + sw600dp+ 디스플레이. 로그인 화면에서 옵션 표시 여부로 실측 확정. 상세는 design.md §3.1.
+
+### 홈랩 프로비저닝 (2026-10-16)
+- 호스트 Proxmox `.100`(prxmx), API 토큰 `agent@pve!homelab`로 제어. CT 101=현재 머신(binder 없음).
+- Ubuntu 24.04 cloud 이미지 `local:iso/noble-server-cloudimg-amd64.img`(597MB) 다운로드 완료.
+- **VM 108 `waydroid-kakao` 생성**: 4코어/6GB/cpu=host/q35, net0 vmbr0, 정적 IP **192.168.0.30/24 gw .1**, cloud-init(ciuser=agent, CT101 ed25519 키), serial 콘솔. OS 디스크(scsi0) 미부착.
+- **막힌 지점**: 임의 경로 디스크 import는 PVE에서 **root 전용**(`Only root can pass arbitrary filesystem paths`). 토큰은 storage content 변경(Datastore.Allocate)도 불가. → OS 이미지를 디스크에 넣는 1단계만 호스트 root 핸드오프 필요. 이후(scsi0 연결·resize·start·게스트 SSH·Waydroid 설치) 전부 토큰+SSH로 진행 가능.
