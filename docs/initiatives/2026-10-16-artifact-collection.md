@@ -100,3 +100,11 @@
 - **★서버 allowlist 통과**: 로그인 화면에 "Use with Main Device"(다른 기기와 함께 사용) + `chk_subdevice` 체크박스 노출 → 폰 공존 서브기기 로그인 가능. SM-X710 지문이 먹힘.
 - 로그인 자동화 계약(resource-id): 계정 `account_key>edit_text`, 비번 `password>edit_text`, 공존 체크 `chk_subdevice`, 로그인 `login_kakao_account`, QR 로그인 `signup_kakao_account_with_qr`.
 - 미해결: adb를 제어 호스트(CT101)로 노출(현재 VM 0.0.0.0:5555 매핑). CT101엔 adb 없음 → Docker 클라이언트 또는 adb 설치 필요. 초기 세그폴트 원인(안정성) 추적.
+
+### ★★ 엔드투엔드 검증 완료 (2026-10-16)
+- QR 로그인으로 **태블릿 서브기기 로그인 성공**(폰 유지). 온보딩(채팅복원 Skip, 권한, 백그라운드 허용) 통과 → MainActivity 진입, 실제 친구/채팅 목록 로드.
+- 채팅 목록 계약: `recycler_view` 행 = `name`/`message`/`time`/`members_count`. 하단탭은 content-desc("Chats tab" 등)로 선택.
+- 채팅방 계약(라이브 확정, APK 정적 후보와 다름): 입력 `message_edit_text`, 전송 `send_layout`, 메시지목록 `chat_log_recycler_list`, 미디어 `media_send_layout`.
+- **나와의 채팅(안전 전송 대상)**: Friends탭 → 상단 내 아바타 → "My Chatroom".
+- **실제 전송+readback 검증 성공**: 자기채팅에 ASCII 테스트 메시지 전송 후 XML readback으로 확인(READBACK-OK). 전 파이프라인 작동.
+- TODO: 한글/유니코드 입력은 `adb shell input text`로 불가 → ADBKeyBoard IME 필요. 제어는 VM에서 직접(CT101 adb 없음).
