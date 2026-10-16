@@ -153,3 +153,7 @@
 - **핵심 버그 2개 해결**: (1) `keypad(True)` 누락으로 방향키 미동작, (2) **워커의 adb subprocess가 TTY stdin 상속해 curses 키 입력 탈취** → adb.py 전 호출에 `stdin=DEVNULL`. tmux 자동화 시 Enter는 `C-m`.
 - 탐색 견고화: open_room/open_chats_tab/open_self_chat/ensure_main 재시도 + 이물 foreground(파일선택기/다이얼로그) 복구 + force-stop 폴백. list_rooms는 비면 재시도. open_room 이름매칭을 text OR content-desc로(자기채팅 행은 name이 desc).
 - 검증: tmux PTY에서 방 목록 로드→자기채팅 열기→메시지 표시→한글 입력→전송(디바이스 readback count=1, status "sent (verified)").
+
+### TUI e2e 테스트 (2026-10-16)
+- `tests/e2e_tui.sh [serial]`: tmux PTY에서 TUI 구동→방 로딩 대기→자기채팅 **행 위치 동적 탐색**(방 순서는 수신으로 바뀜)→한글 입력→전송→**디바이스 readback 독립 검증**→종료. 3/3 통과.
+- 과정에서 발견·수정: 채팅목록이 **"Unread" 필터**일 때 부분(4개)만 보임 → open_chats_tab이 **"All" 칩 선택** 보장. list_rooms는 부분 렌더 대비 여러 번 읽어 최대 스냅샷 채택. (Enter는 tmux `C-m`.)

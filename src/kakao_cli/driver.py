@@ -85,6 +85,11 @@ class Driver:
                 if not n:
                     last = "Chats tab not found"; continue
                 self.tap_node(n); time.sleep(1.0)
+                # ensure the 'All' filter chip (not 'Unread'/'ChatGPT'/...) is active
+                allchip = next((c for c in self.screen().all()
+                                if c.rid.endswith("tab_chip") and c.text == "All"), None)
+                if allchip:
+                    self.tap_node(allchip); time.sleep(0.6)
                 if self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=6):
                     return
                 last = "room list not visible"
@@ -107,18 +112,20 @@ class Driver:
             })
         return rooms
 
-    def list_rooms(self, retries: int = 4) -> list[dict]:
-        last = []
-        for _ in range(retries):
-            self.open_chats_tab()
-            s = self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=10)
+    def list_rooms(self, reads: int = 6) -> list[dict]:
+        """Read the chat list, tolerating partial renders. The list only renders
+        visible rows and re-sorts as messages arrive, so we re-dump a few times
+        (without re-navigating) and return the most complete, stable snapshot."""
+        self.open_chats_tab()
+        best: list[dict] = []
+        for _ in range(reads):
+            s = self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=6)
             if s:
                 rooms = self._read_room_list(s)
-                if rooms:
-                    return rooms
-                last = rooms
-            time.sleep(1.0)
-        return last
+                if len(rooms) > len(best):   # keep the most complete render seen
+                    best = rooms
+            time.sleep(0.5)
+        return best
 
     def track(self, interval: float = 5.0, window: int = 10):
         """Poll the chat list; emit each room's newest message when it changes.
