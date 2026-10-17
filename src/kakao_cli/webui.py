@@ -349,14 +349,24 @@ PAGE = r"""<!doctype html>
   .main{flex:1 1 auto;display:flex;min-height:0}
   .list{flex:0 0 32%;max-width:360px;min-width:200px;overflow-y:auto;
     border-right:1px solid var(--line);padding:4px 0;-webkit-overflow-scrolling:touch}
-  .row{padding:3px 10px;cursor:pointer;white-space:nowrap;overflow:hidden;
-    text-overflow:ellipsis}
+  .row{padding:5px 10px;cursor:pointer;overflow:hidden}
   .row:hover{background:var(--line)}
   .row.sel{background:var(--sel);color:var(--selfg)}
-  .row.unread{font-weight:bold;color:var(--unread)}
-  .row.sel.unread{color:var(--selfg)}
-  .row .badge{color:var(--unread);font-weight:bold}
+  .row .r1{display:flex;gap:6px;align-items:baseline}
+  .row .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row.unread .nm{font-weight:bold;color:var(--unread)}
+  .row.sel.unread .nm{color:var(--selfg)}
+  .row .mc{color:var(--dim);font-weight:normal}
+  .row.sel .mc{color:var(--selfg)}
+  .row .tm{color:var(--dim);font-size:12px;white-space:nowrap}
+  .row.sel .tm{color:var(--selfg)}
+  .row .r2{display:flex;gap:6px;align-items:baseline;margin-top:1px}
+  .row .pv{flex:1;color:var(--dim);white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;font-size:13px}
+  .row.sel .pv{color:var(--selfg)}
+  .row .badge{color:var(--unread);font-weight:bold;white-space:nowrap}
   .row.sel .badge{color:var(--selfg)}
+  .row .mute{color:var(--dim)}
   .pane{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;position:relative}
   .title{display:flex;align-items:center;gap:6px;padding:4px 12px;color:var(--accent);
     font-weight:bold;border-bottom:1px solid var(--line)}
@@ -384,17 +394,34 @@ PAGE = r"""<!doctype html>
     min-width:32px;text-align:center}
   .attach:hover{color:var(--unread)}
   .inputline #input{flex:1;background:transparent;border:none;color:var(--fg);
-    font-family:inherit;font-size:16px;outline:none;min-width:0}
-  .send{color:var(--accent);font-weight:bold;padding:4px 10px;border-radius:4px}
+    font-family:inherit;font-size:16px;line-height:1.4;outline:none;min-width:0;
+    resize:none;max-height:40vh;overflow-y:auto}
+  .send{color:var(--accent);font-weight:bold;padding:4px 10px;border-radius:4px;
+    align-self:flex-end}
   .send:hover{background:var(--line)}
   .empty{color:var(--dim);padding:8px 12px}
+  .inputline.drop{outline:2px dashed var(--accent);outline-offset:-4px}
+
+  /* overlays: quick switcher + help (unicode/text only, TUI tone) */
+  .ovl{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:20;
+    padding-top:10vh}
+  .ovl.show{display:block}
+  .panel{max-width:560px;margin:0 auto;background:var(--bg);border:1px solid var(--line);
+    border-radius:6px;overflow:hidden;box-shadow:0 6px 30px rgba(0,0,0,.5)}
+  .panel .qin{width:100%;background:transparent;border:none;border-bottom:1px solid var(--line);
+    color:var(--fg);font-family:inherit;font-size:16px;padding:10px 12px;outline:none}
+  .panel .res{max-height:50vh;overflow-y:auto}
+  .panel .res .row{padding:8px 12px}
+  .panel .help{padding:12px 16px;line-height:1.8;white-space:pre-wrap}
+  .panel .help b{color:var(--accent)}
+  .panel h3{margin:0;padding:10px 12px;color:var(--accent);border-bottom:1px solid var(--line)}
 
   /* phones / narrow: single-screen navigation (list <-> conversation) */
   @media (max-width:720px){
     #header{display:none}
     .list{flex:1 1 auto;max-width:none;min-width:0;border-right:none}
     .pane{flex:1 1 auto}
-    .row{min-height:44px;display:flex;align-items:center}
+    .row{min-height:44px;display:flex;flex-direction:column;justify-content:center}
     .back{display:inline-block}
     .attach{min-width:44px;min-height:44px;line-height:44px;font-size:22px}
     .send{min-height:44px;padding:0 14px}
@@ -419,23 +446,47 @@ PAGE = r"""<!doctype html>
         <button class="attach" id="attach" title="파일/이미지 첨부" aria-label="첨부">+</button>
         <input type="file" id="file" hidden>
         <span class="prompt">&gt;</span>
-        <input id="input" type="text" autocomplete="off" spellcheck="false"
+        <textarea id="input" rows="1" autocomplete="off" spellcheck="false"
                enterkeyhint="send"
-               placeholder="메시지 입력 후 Enter">
+               placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
         <button class="send" id="send">보내기</button>
       </div>
     </div>
   </div>
   <div class="bar" id="status" role="status">starting …</div>
+
+  <div class="ovl" id="switcher">
+    <div class="panel">
+      <input class="qin" id="qin" placeholder="방 이름 필터 — ↑↓ 이동, Enter 열기, Esc 닫기"
+             autocomplete="off" spellcheck="false">
+      <div class="res" id="qres" role="listbox" aria-label="방 빠른 전환"></div>
+    </div>
+  </div>
+  <div class="ovl" id="helpovl">
+    <div class="panel">
+      <h3>키 도움말</h3>
+      <div class="help" id="helptext"></div>
+    </div>
+  </div>
 <script>
 "use strict";
 const HINT = '<span class="k">kakao-cli</span> — ' +
   '<span class="k">Tab</span>: focus  ' +
   '<span class="k">↑↓/Enter</span>: room  ' +
   '<span class="k">Enter</span>: send  ' +
-  '<span class="k">Esc</span>: list  ' +
-  '<span class="k">r</span>: refresh  ' +
-  '<span class="k">+</span>: file';
+  '<span class="k">/ or Ctrl+K</span>: 전환  ' +
+  '<span class="k">?</span>: 도움말';
+const HELP =
+  '<b>Tab</b>  목록 ↔ 입력 포커스 전환\n' +
+  '<b>↑ ↓</b>  목록에서 방 이동 · <b>Enter</b> 열기\n' +
+  '<b>Enter</b>  전송 · <b>Shift+Enter</b> 줄바꿈\n' +
+  '<b>/ · Ctrl+K</b>  빠른 방 전환(퍼지 필터)\n' +
+  '<b>Alt+↑ / Alt+↓</b>  이전 / 다음 방\n' +
+  '<b>Alt+Shift+↑/↓</b>  이전 / 다음 안읽음 방\n' +
+  '<b>Esc</b>  목록으로 · <b>r</b> 새로고침 · <b>+</b> 파일\n' +
+  '<b>m</b>  현재 방 조용히(알림/배지 제외) 토글\n' +
+  '<b>n</b>  탭이 숨겨졌을 때 알림 켜기/끄기\n' +
+  '<b>?</b>  이 도움말';
 const $ = id => document.getElementById(id);
 $("header").innerHTML = HINT;
 
@@ -445,6 +496,21 @@ const input = $("input");
 
 const esc = s => (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const isMobile = () => window.matchMedia("(max-width:720px)").matches;
+
+// ---- client-side prefs (localStorage): quiet rooms, drafts, notifications ----
+const lsGet = (k,d) => { try{ return JSON.parse(localStorage.getItem(k)) ?? d; }catch(e){ return d; } };
+const lsSet = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} };
+let quiet = new Set(lsGet("kakao.quiet", []));
+let notifyOn = lsGet("kakao.notify", false);
+const isQuiet = name => quiet.has(name);
+function toggleQuiet(name){
+  if(!name) return;
+  if(quiet.has(name)) quiet.delete(name); else quiet.add(name);
+  lsSet("kakao.quiet", [...quiet]);
+  prevRoomsKey=""; render();
+  setStatus(quiet.has(name) ? (" 조용히: "+name) : (" 알림복귀: "+name));
+}
+function setStatus(s){ st.status = s; prevStatus=""; render(); }
 
 // ---- mobile view switching (list <-> conversation) with browser history ----
 function setView(v){
@@ -471,13 +537,19 @@ function roomRow(r,i){
   const div = document.createElement("div");
   div.className = "row" + (r.unread?" unread":"");
   div.setAttribute("role","option");
-  const badge = r.unread ? ' <span class="badge">('+r.unread+')</span>' : '';
-  div.innerHTML = esc(r.name)+badge;
+  div.dataset.room = r.name;
+  const mc = r.members_count ? '<span class="mc">('+esc(r.members_count)+')</span>' : '';
+  const mute = isQuiet(r.name) ? '<span class="mute" title="조용히">● </span>' : '';
+  const tm = r.time ? '<span class="tm">'+esc(r.time)+'</span>' : '';
+  const badge = r.unread ? '<span class="badge">'+r.unread+'</span>' : '';
+  div.innerHTML =
+    '<div class="r1"><span class="nm">'+mute+esc(r.name)+' '+mc+'</span>'+tm+'</div>' +
+    '<div class="r2"><span class="pv">'+esc(r.last_message||'')+'</span>'+badge+'</div>';
   div.onclick = ()=>{ sel=i; openSel(); };
   return div;
 }
 function renderRooms(){
-  const key = JSON.stringify(st.rooms.map(r=>[r.name,r.unread]));
+  const key = JSON.stringify(st.rooms.map(r=>[r.name,r.unread,r.time,r.last_message,r.members_count,isQuiet(r.name)]));
   if(key!==prevRoomsKey){
     prevRoomsKey = key;
     const list = $("list");
@@ -559,13 +631,20 @@ function render(){
   if(status!==prevStatus){ prevStatus=status; $("status").textContent = status; }
 }
 
+const draftKey = name => "kakao.draft:" + name;
+function autogrow(){ input.style.height="auto"; input.style.height=Math.min(input.scrollHeight, window.innerHeight*0.4)+"px"; }
+function saveDraft(){ if(st.room) lsSet(draftKey(st.room), input.value); }
+function loadDraft(name){ input.value = lsGet(draftKey(name), "") || ""; autogrow(); }
+
 function openSel(){
   const r = st.rooms[sel];
   if(!r) return;
   focus = "list";
+  saveDraft();                      // keep the draft for the room we're leaving
   post("/api/open", {room:r.name});
   enterConvo();
   prevMsgsKey = "";                 // new room: force a message repaint
+  loadDraft(r.name);
   if(!isMobile()){ focus="input"; input.focus(); }
   render();
 }
@@ -599,50 +678,164 @@ async function post(path, body){
   }catch(e){ /* transient */ }
 }
 
+let prevUnread = {};
+function updateTitleAndNotify(){
+  // tab title badge: total unread across non-quiet rooms
+  let total = 0;
+  for(const r of st.rooms){ if(!isQuiet(r.name)) total += (r.unread||0); }
+  document.title = (total>0 ? "("+total+") " : "") + "kakao";
+  // opt-in notification only when the tab is hidden and a non-quiet room grew
+  if(notifyOn && document.hidden && "Notification" in window
+     && Notification.permission==="granted"){
+    for(const r of st.rooms){
+      const before = prevUnread[r.name]||0;
+      if(!isQuiet(r.name) && (r.unread||0) > before){
+        try{ new Notification("kakao — "+r.name,
+             {body:(r.last_message||"새 메시지"), tag:"kakao:"+r.name}); }catch(e){}
+      }
+    }
+  }
+  prevUnread = {}; for(const r of st.rooms) prevUnread[r.name] = r.unread||0;
+}
+async function toggleNotify(){
+  if(!("Notification" in window)){ setStatus(" 이 브라우저는 알림 미지원"); return; }
+  if(!notifyOn){
+    let perm = Notification.permission;
+    if(perm==="default") perm = await Notification.requestPermission();
+    if(perm!=="granted"){ setStatus(" 알림 권한 거부됨"); return; }
+    notifyOn = true;
+  } else { notifyOn = false; }
+  lsSet("kakao.notify", notifyOn);
+  setStatus(notifyOn ? " 알림 켜짐(탭 숨김 시)" : " 알림 꺼짐");
+}
+
 async function poll(){
   try{
     const r = await fetch("/api/state?since="+st.seq);
     if(r.status===204) return;
-    if(r.ok){ st = await r.json(); render(); }
+    if(r.ok){ st = await r.json(); render(); updateTitleAndNotify(); }
   }catch(e){ /* keep trying */ }
 }
 
 function sendCurrent(){
   const t = input.value;
-  if(t.trim()){ post("/api/send", {text:t}); input.value=""; }
+  if(t.trim()){
+    post("/api/send", {text:t});
+    input.value="";
+    if(st.room) lsSet(draftKey(st.room), "");
+    autogrow();
+  }
+}
+
+// jump to next/prev room (optionally only unread), opening it
+function jumpRoom(dir, unreadOnly){
+  if(!st.rooms.length) return;
+  let i = sel;
+  for(let n=0;n<st.rooms.length;n++){
+    i = (i + dir + st.rooms.length) % st.rooms.length;
+    if(!unreadOnly || (st.rooms[i].unread||0) > 0){ sel=i; openSel(); return; }
+  }
 }
 
 // keyboard — mirror the TUI key map (desktop); input stays usable on mobile
 document.addEventListener("keydown", (e)=>{
+  // overlays capture their own keys first
+  if($("switcher").classList.contains("show")){ switcherKey(e); return; }
+  if($("helpovl").classList.contains("show")){ if(e.key==="Escape"||e.key==="?") closeOverlays(); return; }
+
+  // quick switcher / help work from anywhere
+  if((e.key==="k"||e.key==="K") && (e.ctrlKey||e.metaKey)){ e.preventDefault(); openSwitcher(); return; }
+  // room navigation with Alt works even while typing
+  if(e.altKey && (e.key==="ArrowUp"||e.key==="ArrowDown")){
+    e.preventDefault(); jumpRoom(e.key==="ArrowDown"?1:-1, e.shiftKey); return;
+  }
+
   if(e.target===input){
     if(e.key==="Tab"){ e.preventDefault(); focus="list"; input.blur(); render(); }
     else if(e.key==="Escape"){ focus="list"; input.blur(); render(); if(isMobile()) $("back").click(); }
-    else if(e.key==="Enter"){ e.preventDefault(); sendCurrent(); }
-    return;                       // single keys (r, arrows) must not fire while typing
+    else if(e.key==="Enter" && e.ctrlKey){ e.preventDefault();
+      const s=input.selectionStart, v=input.value;
+      input.value=v.slice(0,s)+"\n"+v.slice(input.selectionEnd);
+      input.selectionStart=input.selectionEnd=s+1; autogrow(); }
+    else if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); sendCurrent(); }
+    // Shift+Enter falls through to the textarea's default newline
+    return;                       // single keys (r, /, ?) must not fire while typing
   }
+  if(e.key==="/"){ e.preventDefault(); openSwitcher(); return; }
+  if(e.key==="?"){ e.preventDefault(); openHelp(); return; }
   if(e.key==="Tab"){ e.preventDefault(); focus="input"; input.focus(); render(); }
   else if(e.key==="ArrowUp"){ e.preventDefault(); sel=Math.max(0,sel-1); render(); }
   else if(e.key==="ArrowDown"){ e.preventDefault(); sel=Math.min(st.rooms.length-1,sel+1); render(); }
   else if(e.key==="Enter"){ e.preventDefault(); openSel(); }
   else if(e.key==="r"){ post("/api/rooms"); }
+  else if(e.key==="m"){ toggleQuiet(st.room); }
+  else if(e.key==="n"){ toggleNotify(); }
 });
 input.addEventListener("focus", ()=>{ if(focus!=="input"){ focus="input"; render(); }});
+input.addEventListener("input", autogrow);
 $("send").addEventListener("click", ()=>{ sendCurrent(); input.focus(); });
+
+// ---- quick switcher overlay (fuzzy room filter) ----
+let qsel = 0, qlist = [];
+function openSwitcher(){ $("switcher").classList.add("show"); $("qin").value=""; qsel=0; renderSwitcher(); $("qin").focus(); }
+function openHelp(){ $("helptext").innerHTML = HELP; $("helpovl").classList.add("show"); }
+function closeOverlays(){ $("switcher").classList.remove("show"); $("helpovl").classList.remove("show"); }
+function fuzzy(q, name){
+  q=q.toLowerCase(); name=name.toLowerCase(); let i=0;
+  for(const ch of name){ if(ch===q[i]) i++; if(i>=q.length) return true; }
+  return q.length===0;
+}
+function renderSwitcher(){
+  const q = $("qin").value.trim();
+  qlist = st.rooms.map((r,idx)=>({r,idx})).filter(o=> q==="" || fuzzy(q,o.r.name));
+  if(qsel>=qlist.length) qsel=Math.max(0,qlist.length-1);
+  const res = $("qres"); res.innerHTML="";
+  qlist.forEach((o,j)=>{
+    const d=document.createElement("div");
+    d.className="row"+(j===qsel?" sel":"");
+    d.setAttribute("role","option");
+    const mc=o.r.members_count?' <span class="mc">('+esc(o.r.members_count)+')</span>':'';
+    d.innerHTML='<span class="nm">'+esc(o.r.name)+mc+'</span>';
+    d.onclick=()=>{ sel=o.idx; closeOverlays(); openSel(); };
+    res.appendChild(d);
+  });
+}
+$("qin").addEventListener("input", ()=>{ qsel=0; renderSwitcher(); });
+function switcherKey(e){
+  if(e.key==="Escape"){ e.preventDefault(); closeOverlays(); }
+  else if(e.key==="ArrowDown"){ e.preventDefault(); qsel=Math.min(qlist.length-1,qsel+1); renderSwitcher(); }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); qsel=Math.max(0,qsel-1); renderSwitcher(); }
+  else if(e.key==="Enter"){ e.preventDefault(); const o=qlist[qsel]; if(o){ sel=o.idx; closeOverlays(); openSel(); } }
+}
+document.querySelectorAll(".ovl").forEach(o=> o.addEventListener("click", e=>{ if(e.target===o) closeOverlays(); }));
 
 // file attach: + opens the picker, selection uploads to the open room
 $("attach").addEventListener("click", ()=>{
   if(!st.room){ st.status = " 먼저 방을 선택하세요"; prevStatus=""; render(); return; }
   $("file").click();
 });
-$("file").addEventListener("change", async (e)=>{
-  const f = e.target.files[0];
+async function uploadFile(f){
   if(!f || !st.room) return;
-  st.status = " attaching " + f.name + " …"; prevStatus=""; render();
+  const name = f.name || ("paste-"+Date.now()+(f.type==="image/png"?".png":""));
+  setStatus(" attaching " + name + " …");
   try{
-    await fetch("/api/sendfile?name=" + encodeURIComponent(f.name), {method:"POST", body:f});
+    await fetch("/api/sendfile?name=" + encodeURIComponent(name), {method:"POST", body:f});
   }catch(err){ /* status via poll */ }
-  e.target.value = "";
+}
+$("file").addEventListener("change", async (e)=>{ await uploadFile(e.target.files[0]); e.target.value=""; });
+
+// paste an image into the input, or drag-and-drop a file onto the conversation
+input.addEventListener("paste", (e)=>{
+  const items = e.clipboardData && e.clipboardData.items;
+  if(!items) return;
+  for(const it of items){
+    if(it.kind==="file"){ const f=it.getAsFile(); if(f){ e.preventDefault(); uploadFile(f); return; } }
+  }
 });
+const pane = document.querySelector(".pane");
+["dragenter","dragover"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); $("inputline").classList.add("drop"); }));
+["dragleave","drop"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); $("inputline").classList.remove("drop"); }));
+pane.addEventListener("drop", e=>{ const f=e.dataTransfer && e.dataTransfer.files[0]; if(f) uploadFile(f); });
 
 // keep the input line visible when the mobile keyboard opens (visualViewport)
 function fitViewport(){

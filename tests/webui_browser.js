@@ -38,7 +38,7 @@ const TITLE_OPEN = () =>
   async function selfRow() {
     return page.evaluateHandle((self) => {
       for (const row of document.querySelectorAll('#list .row'))
-        if (row.textContent.replace(/\s*\(\d+\)\s*$/, '').trim() === self) return row;
+        if (row.dataset.room === self) return row;
       return null;
     }, SELF);
   }

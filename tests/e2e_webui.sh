@@ -80,6 +80,13 @@ SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_scroll.js" "http://$VM_IP:$PORT" 
   || fail "scroll-persistence test failed"
 echo "   scroll OK"
 
+echo "4f) stage-A features (2-line rows, quick switcher, textarea newline)"
+FMSG="e2e-feat-$(date +%H%M%S)-한글"
+SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_features.js" "http://$VM_IP:$PORT" "$FMSG" \
+  || fail "feature test failed"
+readback "$FMSG" || fail "feature message not found in self-chat"
+echo "   features OK (device-verified)"
+
 echo "5) document (zip) send via the '+' picker"
 ZIP="/tmp/kc_e2e_${SESS}_$(date +%H%M%S).zip"
 python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('hello.txt','hi'); z.close()" "$ZIP" \

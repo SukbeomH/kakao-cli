@@ -41,7 +41,7 @@ async function openSelf(p) {
     // open the self-chat (tap the row) -> conversation view
     await p.evaluate((self) => {
       for (const row of document.querySelectorAll('#list .row'))
-        if (row.textContent.replace(/\s*\(\d+\)\s*$/, '').trim() === self) { row.click(); return; }
+        if (row.dataset.room === self) { row.click(); return; }
     }, SELF);
     await openSelf(p);
     await p.screenshot({ path: process.env.OUT_CONVO || '/tmp/webui_m_convo.png' });
