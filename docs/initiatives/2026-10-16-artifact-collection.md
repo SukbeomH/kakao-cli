@@ -242,3 +242,10 @@ state의 기존 방 데이터(last_message/time/members_count)만으로 프런�
 - **보안**: 화면 API는 전체 계정 원격조작 → 기본 바인드 127.0.0.1 유지. **비로컬 `--host`면 기본 OFF**, `--allow-screen` 명시해야 ON(기동 경고). 조작 POST는 JSON Content-Type만 + Origin이 있으면 Host 일치 검사(CSRF). 프레임 디스크 미저장.
 - **UI**: 타이틀·상태바의 `⧉ 화면`(모바일 로그인처럼 방이 없어도 상태바 버튼은 항상 보임)·`g` 키·로그인 배너로 오버레이 열기. `<img touch-action:none>`에 pointerdown/up으로 탭(이동<12px)·스와이프, Back/Home/Enter 버튼, 한글 텍스트 입력. 배너는 `.banner[hidden]{display:none}`로 숨김(= `.banner{display:flex}`가 `[hidden]` UA 스타일을 덮어쓰는 버그 수정).
 - **검증**: 단위 15/15(좌표변환 레터박스/clamp, 로그인감지 fixture, png_size, ScreenBuffer active, 비활성 403, 조작 입력검증/CSRF 415). e2e(`e2e_screen.sh`+`webui_screen_check.py`+`webui_screen.js`): 프레임 부트스트랩·**탭으로 Chats↔Friends 전환 dump 검증**·프레임 변화·fps 실측·유휴 시 캡처중지·오버레이(데스크톱/모바일)·`--allow-screen` 없는 비로컬 바인드 403. 스크린샷 `/home/agent/kakao-tasks/shots/screen_{desktop,mobile}.png`.
+
+### 웹UI 메신저 개선 — B 데이터 확장 (2026-10-17, B0 확정필드만)
+B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환: 필드 추가만, TUI/poll은 text 래퍼라 무영향).
+- **추출**: `sender`=`nickname`(연속 메시지는 앱이 생략 → 빈 문자열, 프런트가 상속). `is_mine`=기하(행 bounds는 full-width라 `message_container`(없으면 `bubble`) 우측모서리 x2 ≥ 화면폭×0.93이면 내 메시지; 수신은 좌측열 고정). 날짜행 `time_line`→`{kind:"date"}`. 인용답장 `source_*`는 발신자 아님(무시).
+- **표시 안 함(추측 금지)**: 시각·읽음수(uiautomator 미노출, `chat_info` 비어있음), 시스템행(미확정).
+- **프런트(IRC형)**: `보낸사람 │ 본문` 한 줄(flex, 이름 열 8ch 우정렬·ellipsis, hanging indent). 연속 동일 발신자는 이름 `·` 생략(클라가 prevKey로 판정, 날짜행에서 리셋). 내 메시지는 `나`+`--me` 색. 발신자 이름은 해시 6색(WeeChat식). 날짜 구분선 `──── <날짜> ────`는 `position:sticky`로 스크롤 중 상단 고정. 미디어/파일은 같은 줄의 `⤓` 버튼(`.dlbtn`)으로 유지.
+- **검증**: 단위 15/15. 자기채팅(100% 내 메시지)→전부 `나`/`·`로 is_mine 정확 확인. 그룹방 구조(마스킹 카운트): 내 메시지 우측·상대 이름+색·연속 `·`. 전체 webui e2e(수신 셀렉터 `.dlbtn`로 갱신, 송수신/모바일/스크롤/A기능) PASS. 스크린샷 갱신.
