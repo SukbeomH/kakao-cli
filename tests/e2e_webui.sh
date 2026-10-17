@@ -62,11 +62,23 @@ readback(){ # readback <ere> — true if the regex appears in the open chat dump
   return 1
 }
 
-echo "4) text send via the browser"
+echo "4) text send via the browser (desktop)"
 SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_browser.js" "http://$VM_IP:$PORT" "$MSG" \
   || fail "browser text driver failed"
 readback "$MSG" || fail "text message not found in self-chat"
 echo "   text OK (device-verified)"
+
+echo "4m) text send via the browser (mobile emulation: tap row → convo → 보내기 → ← 목록)"
+MMSG="e2e-mob-$(date +%H%M%S)-한글"
+MOBILE=1 SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_browser.js" "http://$VM_IP:$PORT" "$MMSG" \
+  || fail "mobile browser driver failed"
+readback "$MMSG" || fail "mobile message not found in self-chat"
+echo "   mobile OK (device-verified)"
+
+echo "4s) scroll position is kept when a message arrives while scrolled up"
+SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_scroll.js" "http://$VM_IP:$PORT" \
+  || fail "scroll-persistence test failed"
+echo "   scroll OK"
 
 echo "5) document (zip) send via the '+' picker"
 ZIP="/tmp/kc_e2e_${SESS}_$(date +%H%M%S).zip"
