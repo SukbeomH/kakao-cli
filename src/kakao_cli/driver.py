@@ -267,10 +267,15 @@ class Driver:
         return "sent"
 
     def _messages_detailed(self, s) -> list[dict]:
-        """Ordered messages in the open room, each a dict:
-        {kind: text|photo|video|file, text, name?(file), bounds?(tappable node)}.
-        Media/file rows carry the bounds of the element to tap for export."""
+        """Ordered messages in the open room. Each dict has at least
+        {kind: text|photo|video|file|date, text}; chat rows also carry
+        {sender, is_mine} and media/file rows the tappable {bounds}. Fields
+        confirmed in B0 only — time and read-count are not exposed by the app,
+        so they are omitted rather than guessed. `sender` is empty on a
+        consecutive message from the same person (the UI inherits it)."""
         out = []
+        first = next(s.root.iter("node"), None)
+        screen_w = _bounds_of(first)[2] if first is not None else 0
         conts = [el for el in s.root.iter("node")
                  if el.get("resource-id", "").endswith("chat_log_recycler_list")]
         for c in conts:
@@ -279,30 +284,41 @@ class Driver:
                 nodes: dict = {}
                 for dd in row.iter("node"):
                     rid = dd.get("resource-id", "").split("/")[-1]
-                    val = dd.get("text", "") or dd.get("content-desc", "")
                     if rid and rid not in leafs:
-                        leafs[rid] = val
+                        leafs[rid] = (dd.get("text", "") or dd.get("content-desc", ""))
                         nodes[rid] = dd
                 if not leafs:
                     continue
+                if "time_line" in leafs:                      # date separator row
+                    d = (leafs.get("time_line") or "").strip()
+                    if d:
+                        out.append({"kind": "date", "text": d})
+                    continue
+                sender = (leafs.get("nickname") or "").strip()
+                # is_mine by geometry: my bubbles hug the right margin, others the
+                # left column (row bounds are full-width, so use the bubble node)
+                mc = nodes.get("message_container") or nodes.get("bubble")
+                is_mine = False
+                if mc is not None and screen_w:
+                    is_mine = _bounds_of(mc)[2] >= screen_w * 0.93
+                meta = {"sender": sender, "is_mine": is_mine}
                 if "txt_size" in leafs:                       # file/document
                     name = (leafs.get("message") or leafs.get("bubble") or "").strip()
-                    b = _bounds_of(nodes.get("bubble") or row)
-                    out.append({"kind": "file", "text": name or "[File]",
-                                "name": name, "bounds": b})
+                    out.append({"kind": "file", "text": name or "[File]", "name": name,
+                                "bounds": _bounds_of(nodes.get("bubble") or row), **meta})
                 elif "image" in leafs:
                     out.append({"kind": "photo", "text": "[Photo]",
-                                "bounds": _bounds_of(nodes["image"])})
+                                "bounds": _bounds_of(nodes["image"]), **meta})
                 elif "video" in leafs:
                     out.append({"kind": "video", "text": "[Video]",
-                                "bounds": _bounds_of(nodes["video"])})
+                                "bounds": _bounds_of(nodes["video"]), **meta})
                 else:
                     t = ""
                     for k in ("message", "text", "text_with_pin"):
-                        if leafs.get(k, "").strip():
+                        if (leafs.get(k) or "").strip():
                             t = leafs[k].strip(); break
                     if t:
-                        out.append({"kind": "text", "text": t})
+                        out.append({"kind": "text", "text": t, **meta})
         if not out:  # fallback flat scan (text only)
             for n in s.all():
                 if n.rid.split("/")[-1] in ("message", "text", "text_with_pin") and n.text.strip():

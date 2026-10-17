@@ -196,6 +196,38 @@ def test_screen_view_to_device():
     assert view_to_device(10, 10, 0, 0, 1600, 2560) == (0, 0)
 
 
+def test_messages_detailed_sender_mine_date():
+    sys.path.insert(0, "src")
+    from kakao_cli.driver import Driver
+    from kakao_cli.ui import Screen
+    P = "com.kakao.talk:id"
+    xml = (
+        '<hierarchy><node bounds="[0,0][1600,2560]">'
+        f'<node resource-id="{P}/chat_log_recycler_list" bounds="[0,100][1600,2400]">'
+        f'<node bounds="[0,100][1600,160]"><node resource-id="{P}/time_line" '
+        'text="2026-10-17" bounds="[700,110][900,150]"/></node>'
+        '<node bounds="[0,160][1600,300]">'
+        f'<node resource-id="{P}/nickname" text="Alice" bounds="[200,170][400,210]"/>'
+        f'<node resource-id="{P}/message_container" bounds="[200,210][900,290]">'
+        f'<node resource-id="{P}/message" text="hi" bounds="[210,220][890,280]"/></node></node>'
+        '<node bounds="[0,300][1600,440]">'
+        f'<node resource-id="{P}/message_container" bounds="[1000,310][1569,390]">'
+        f'<node resource-id="{P}/message" text="yo" bounds="[1010,320][1560,380]"/></node></node>'
+        '<node bounds="[0,440][1600,560]">'
+        f'<node resource-id="{P}/message_container" bounds="[200,450][700,530]">'
+        f'<node resource-id="{P}/message" text="again" bounds="[210,460][690,520]"/></node></node>'
+        '</node></node></hierarchy>'
+    )
+    msgs = Driver(None)._messages_detailed(Screen(xml))
+    kinds = [(m["kind"], m.get("text"), m.get("sender"), m.get("is_mine")) for m in msgs]
+    assert kinds[0] == ("date", "2026-10-17", None, None)
+    assert kinds[1] == ("text", "hi", "Alice", False)      # incoming, left-aligned
+    assert kinds[2] == ("text", "yo", "", True)            # mine, hugs right margin
+    assert kinds[3] == ("text", "again", "", False)        # consecutive incoming, left
+    # the text wrapper stays backward-compatible (strings only)
+    assert Driver(None)._messages_on_screen(Screen(xml)) == ["2026-10-17", "hi", "yo", "again"]
+
+
 def test_screen_login_detection():
     sys.path.insert(0, "src")
     from kakao_cli.screen import is_login_screen

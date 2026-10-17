@@ -28,14 +28,17 @@ function die(m){ console.error('FAIL: ' + m); process.exit(1); }
     }, SELF);
     // wait for a clickable downloadable bubble matching MATCH to render
     await p.waitForFunction((m) => {
-      for (const el of document.querySelectorAll('#msgs .msg.dl'))
+      for (const el of document.querySelectorAll('#msgs .dlbtn'))
         if (el.textContent.includes(m)) return true;
       return false;
     }, MATCH, { timeout: 60000 });
     const target = await p.evaluateHandle((m) => {
-      for (const el of document.querySelectorAll('#msgs .msg.dl'))
-        if (el.textContent.includes(m)) return el;
-      return null;
+      // click the LAST (newest, fully-visible) match — the topmost bubble can be
+      // clipped by the scroll top, where a tap won't open the viewer
+      let found = null;
+      for (const el of document.querySelectorAll('#msgs .dlbtn'))
+        if (el.textContent.includes(m)) found = el;
+      return found;
     }, MATCH);
     console.log('clicking downloadable bubble');
     const [download] = await Promise.all([

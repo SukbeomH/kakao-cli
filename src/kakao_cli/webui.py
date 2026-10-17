@@ -479,14 +479,22 @@ PAGE = r"""<!doctype html>
   .back{display:none;color:var(--accent);font-weight:bold;padding:4px 8px;
     min-width:36px;border-radius:4px}
   .back:hover{background:var(--line)}
-  .msgs{flex:1 1 auto;overflow-y:auto;padding:6px 12px;-webkit-overflow-scrolling:touch}
-  .msg{white-space:pre-wrap;word-break:break-word;padding:1px 0}
-  .msg.media{color:var(--me)}
-  .msg.dl{cursor:pointer;display:block;width:100%;text-align:left}
-  .msg.dl:hover{text-decoration:underline}
-  .msg .dlico{color:var(--accent)}
-  .msg.dl-busy{opacity:.55}
-  .msg.dl-busy .dlico::after{content:" …"}
+  .msgs{flex:1 1 auto;overflow-y:auto;padding:6px 12px;-webkit-overflow-scrolling:touch;
+    position:relative}
+  .msg{display:flex;align-items:baseline;gap:6px;padding:1px 0;word-break:break-word}
+  .msg .who{flex:0 0 8ch;max-width:8ch;text-align:right;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;color:var(--accent)}
+  .msg .sep{color:var(--line)}
+  .msg .body{flex:1;min-width:0;white-space:pre-wrap}
+  .msg.me .who{color:var(--me)}
+  .msg.me .body{color:var(--me)}
+  .dlbtn{color:inherit;text-align:left;padding:0;cursor:pointer}
+  .dlbtn:hover{text-decoration:underline}
+  .dlbtn .dlico{color:var(--accent)}
+  .dlbtn.dl-busy{opacity:.55}
+  .dlbtn.dl-busy .dlico::after{content:" …"}
+  .daterow{position:sticky;top:0;z-index:3;text-align:center;color:var(--dim);
+    white-space:pre;padding:4px 0;background:var(--bg);font-size:12px}
   .newmsg{position:absolute;left:50%;transform:translateX(-50%);bottom:64px;
     display:none;background:var(--sel);color:var(--selfg);border-radius:14px;
     padding:4px 12px;box-shadow:0 1px 6px rgba(0,0,0,.4);z-index:5}
@@ -728,22 +736,38 @@ function renderRooms(){
   }
 }
 
-function msgNode(msg, rank){
-  const kind = (msg && msg.kind) || "text";
-  const dl = (kind==="photo" || kind==="video" || kind==="file");
-  if(dl){
-    const b = document.createElement("button");
-    b.className = "msg media dl";
-    const label = kind==="file" ? (msg.name || msg.text || "[File]") : msg.text;
-    b.innerHTML = '<span class="dlico">⤓</span> ' + esc(label);
-    b.title = "탭해서 받기";
-    b.onclick = () => startExport(kind, rank, msg.name||"", b);
-    return b;
+// stable 6-colour palette for sender names (WeeChat-style nick hashing)
+const NICKCOL = ["#7aa2f7","#9ece6a","#e0af68","#bb9af7","#7dcfff","#f7768e"];
+function nickColor(name){
+  let h=0; for(const ch of (name||"")) h=(h*31 + ch.charCodeAt(0))>>>0;
+  return NICKCOL[h % NICKCOL.length];
+}
+// msg + resolved display name (""=omit with ·). Returns a DOM node.
+function msgNode(msg, rank, who, mine){
+  if(msg.kind==="date"){
+    const d=document.createElement("div"); d.className="daterow";
+    d.textContent="──── "+(msg.text||"")+" ────"; return d;
   }
-  const div = document.createElement("div");
-  div.className = "msg";
-  div.textContent = (msg && msg.text) || "";
-  return div;
+  const line=document.createElement("div");
+  line.className="msg irc"+(mine?" me":"");
+  const w=document.createElement("span"); w.className="who";
+  w.textContent = who==="·" ? "·" : who;
+  if(!mine && who && who!=="·") w.style.color = nickColor(who);
+  const sep=document.createElement("span"); sep.className="sep"; sep.textContent="│";
+  const body=document.createElement("span"); body.className="body";
+  const kind=msg.kind||"text";
+  if(kind==="photo"||kind==="video"||kind==="file"){
+    const b=document.createElement("button"); b.className="dlbtn";
+    const label = kind==="file" ? (msg.name||msg.text||"[File]") : msg.text;
+    b.innerHTML='<span class="dlico">⤓</span> '+esc(label);
+    b.title="탭해서 받기";
+    b.onclick=()=>startExport(kind, rank, msg.name||"", b);
+    body.appendChild(b);
+  } else {
+    body.textContent = msg.text||"";
+  }
+  line.appendChild(w); line.appendChild(sep); line.appendChild(body);
+  return line;
 }
 function renderMessages(){
   const key = JSON.stringify(st.messages);
@@ -757,13 +781,22 @@ function renderMessages(){
   const keepTop = m.scrollTop;
   prevMsgsKey = key; prevMsgsLen = st.messages.length;
   if(!st.messages.length){ m.innerHTML = '<div class="empty">—</div>'; hideNew(); return; }
-  // ranks per downloadable kind (stable across the whole list)
+  // ranks per downloadable kind (stable across the whole list); resolve the
+  // IRC display name per line (· = same sender as the line above / omitted)
   const ranks = {};
+  let prevKey = null;
   const frag = document.createDocumentFragment();
   st.messages.forEach(msg=>{
     const kind=(msg&&msg.kind)||"text";
+    if(kind==="date"){ prevKey=null; frag.appendChild(msgNode(msg)); return; }
+    const mine = !!msg.is_mine;
+    const key = mine ? "\u0000me" : (msg.sender || prevKey || "");
+    let who;
+    if(mine) who = (key===prevKey) ? "·" : "나";
+    else who = (msg.sender && key!==prevKey) ? msg.sender : "·";
+    prevKey = key;
     let rank=0; if(kind==="photo"||kind==="video"||kind==="file"){ rank=ranks[kind]||0; ranks[kind]=rank+1; }
-    frag.appendChild(msgNode(msg, rank));
+    frag.appendChild(msgNode(msg, rank, who, mine));
   });
   m.replaceChildren(frag);   // note: this resets scrollTop to 0
   if(wasBottom){ m.scrollTop = m.scrollHeight; hideNew(); }
