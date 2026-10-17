@@ -233,3 +233,12 @@ state의 기존 방 데이터(last_message/time/members_count)만으로 프런�
 - **접근성**: 행 `data-room`+`role=option`+`aria-selected`, 메시지 `role=log`, 상태 `role=status`, 미디어 `<button>`(기존).
 - **금지 준수**: 제3자·CDN 없음, 말풍선 기본값/`maximum-scale` 미변경, 바인드 기본값 불변.
 - **검증**: 단위 10/10. 브라우저 e2e(`webui_features.js`): 2줄 행 구조 확인 → `/` 퀵스위처로 자기채팅 열기 → Shift+Enter 줄바꿈(`line1\nline2`) 확인 → Enter 전송 → adb readback. 데스크톱/모바일/스크롤/송수신 전체 e2e PASS. 스크린샷 갱신(`/home/agent/kakao-tasks/shots/`).
+
+### 웹UI 기기 화면 실시간 보기·조작 (C, 2026-10-17, 로그인용)
+웹 UI에서 태블릿 화면을 보고 조작해 재로그인(QR/보안코드/온보딩)·막힌 팝업 해제를 끝낼 수 있게. **실제 로그아웃/재로그인은 하지 않음**(로그인 감지는 fixture 단위테스트).
+- **캡처**: `adb exec-out screencap -p`(PNG, 메모리만, 디스크 미저장). `screen.py`의 `ScreenBuffer`가 최신 1프레임+seq 보관, **viewer TTL(2s)** — 프레임/`info` 요청이 2초 내 있을 때만 `active()`. 워커는 `screen.active()`면 캡처 루프(간격 0.25s+screencap)로 전환하고 **채팅 폴링 중지**(adb 경합 방지). `set_frame`은 **동일 바이트면 seq 미증가**(대역폭 절약). 클라이언트는 `/api/screen/info`(작음, viewer 터치)로 seq 확인→**변할 때만** `<img>`로 프레임 수신. **실측 fps 1~3**(정적 화면은 더 낮음), 프레임 1600×2560 PNG ~0.4–0.6MB.
+- **조작**(Worker 큐 직렬화): `POST /api/screen/tap|swipe|key|text`. 좌표변환 `view_to_device`(레터박스/스케일/clamp; screencap이 현재 회전으로 나와 `input`과 동일 좌표계라 회전변환 불필요). 텍스트는 ADBKeyBoard 재사용(한글). key=back/home/enter.
+- **로그인 감지**: `is_login_screen(activity,xml)` — 액티비티(Authenticator 등) 또는 로그인 rid(signup_kakao_account_with_qr/chk_subdevice/...). 워커 `_maybe_login`(2s 스로틀)이 상태 변화 시 `login` 이벤트 emit→상태바/배너 "로그인이 필요합니다 — [화면 열기]". 로그인 완료 시 방목록 자동 재로드. 방목록 실패를 반복 에러로 쏟지 않음.
+- **보안**: 화면 API는 전체 계정 원격조작 → 기본 바인드 127.0.0.1 유지. **비로컬 `--host`면 기본 OFF**, `--allow-screen` 명시해야 ON(기동 경고). 조작 POST는 JSON Content-Type만 + Origin이 있으면 Host 일치 검사(CSRF). 프레임 디스크 미저장.
+- **UI**: 타이틀·상태바의 `⧉ 화면`(모바일 로그인처럼 방이 없어도 상태바 버튼은 항상 보임)·`g` 키·로그인 배너로 오버레이 열기. `<img touch-action:none>`에 pointerdown/up으로 탭(이동<12px)·스와이프, Back/Home/Enter 버튼, 한글 텍스트 입력. 배너는 `.banner[hidden]{display:none}`로 숨김(= `.banner{display:flex}`가 `[hidden]` UA 스타일을 덮어쓰는 버그 수정).
+- **검증**: 단위 15/15(좌표변환 레터박스/clamp, 로그인감지 fixture, png_size, ScreenBuffer active, 비활성 403, 조작 입력검증/CSRF 415). e2e(`e2e_screen.sh`+`webui_screen_check.py`+`webui_screen.js`): 프레임 부트스트랩·**탭으로 Chats↔Friends 전환 dump 검증**·프레임 변화·fps 실측·유휴 시 캡처중지·오버레이(데스크톱/모바일)·`--allow-screen` 없는 비로컬 바인드 403. 스크린샷 `/home/agent/kakao-tasks/shots/screen_{desktop,mobile}.png`.

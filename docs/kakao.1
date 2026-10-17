@@ -114,6 +114,20 @@ to reach it from a phone.
 .BR tui .
 .B \-\-host 0.0.0.0
 exposes account control unauthenticated \[em] prefer an SSH tunnel.
+A live device-screen view (open with
+.B g
+or the \[u2969] button) streams the tablet via repeated
+.I screencap
+(captured only while watched, never written to disk) and lets you tap/swipe/type
+and press Back/Home/Enter \[em] for re-login (QR, security code, onboarding) and
+clearing stuck popups. Because that is full-account remote control, the screen
+API is
+.B off
+by default on a non-local
+.BR \-\-host ;
+pass
+.B \-\-allow-screen
+to enable it there.
 .TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
