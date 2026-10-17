@@ -173,6 +173,110 @@ def test_webui_safe_name():
     assert _safe_name("") == "file"
 
 
+# --- live device screen (stage C) ---
+import struct
+
+
+def _png(w, h):
+    return (b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", w, h)
+            + b"\x08\x06\x00\x00\x00" + b"\x00" * 8)
+
+
+def test_screen_view_to_device():
+    sys.path.insert(0, "src")
+    from kakao_cli.screen import view_to_device
+    # element matches the device aspect (no letterbox): proportional mapping
+    assert view_to_device(200, 320, 400, 640, 1600, 2560) == (800, 1280)
+    assert view_to_device(0, 0, 400, 640, 1600, 2560) == (0, 0)
+    assert view_to_device(400, 640, 400, 640, 1600, 2560) == (1599, 2559)  # clamped
+    # wide element → horizontal letterbox (offset 200px each side)
+    assert view_to_device(400, 320, 800, 640, 1600, 2560) == (800, 1280)
+    assert view_to_device(200, 0, 800, 640, 1600, 2560) == (0, 0)
+    # degenerate inputs are safe
+    assert view_to_device(10, 10, 0, 0, 1600, 2560) == (0, 0)
+
+
+def test_screen_login_detection():
+    sys.path.insert(0, "src")
+    from kakao_cli.screen import is_login_screen
+    assert is_login_screen("com.kakao.talk/.activity.authenticator.AuthenticatorActivity")
+    assert is_login_screen("com.kakao.talk/.activity.main.MainActivity",
+                           '<node resource-id="com.kakao.talk:id/signup_kakao_account_with_qr"/>')
+    assert not is_login_screen("com.kakao.talk/.activity.main.MainActivity", "<node/>")
+    assert not is_login_screen("", "")
+
+
+def test_screen_png_size_and_buffer():
+    sys.path.insert(0, "src")
+    from kakao_cli.screen import png_size, ScreenBuffer
+    assert png_size(_png(1600, 2560)) == (1600, 2560)
+    assert png_size(b"not a png") is None
+    buf = ScreenBuffer(ttl=0.2)
+    assert buf.active() is False          # nobody watching yet
+    buf.touch()
+    assert buf.active() is True
+    buf.set_frame(_png(1080, 1920))
+    seq, frame, w, h = buf.get()
+    assert (w, h) == (1080, 1920) and frame and seq == 1
+
+
+def test_webui_screen_disabled_blocks(tmp_path):
+    import threading
+    sys.path.insert(0, "src")
+    from kakao_cli import webui
+    worker = _StubWorker()
+    httpd = webui.serve(worker, "127.0.0.1", 0, screen_enabled=False)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        c, _ = _http("GET", base + "/api/screen/frame")
+        assert c == 403
+        c, _ = _http("POST", base + "/api/screen/tap", {"cx": 1, "cy": 1, "ew": 10, "eh": 10})
+        assert c == 403
+        # info still reports (enabled: false) without leaking frames
+        c, b = _http("GET", base + "/api/screen/info")
+        assert c == 200 and _json.loads(b)["enabled"] is False
+    finally:
+        httpd.shutdown()
+
+
+def test_webui_screen_control(tmp_path):
+    import threading
+    import urllib.request
+    sys.path.insert(0, "src")
+    from kakao_cli import webui
+    from kakao_cli.screen import ScreenBuffer
+    worker = _StubWorker()
+    screen = ScreenBuffer()
+    screen.set_frame(_png(1600, 2560))
+    httpd = webui.serve(worker, "127.0.0.1", 0, screen=screen, screen_enabled=True)
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # tap maps element coords → device coords and enqueues a worker command
+        c, b = _http("POST", base + "/api/screen/tap", {"cx": 200, "cy": 320, "ew": 400, "eh": 640})
+        assert c == 200
+        assert ("tap", 800, 1280) in worker.puts
+        # bad key rejected
+        c, _ = _http("POST", base + "/api/screen/key", {"name": "power"})
+        assert c == 400
+        # good key enqueued
+        c, _ = _http("POST", base + "/api/screen/key", {"name": "back"})
+        assert c == 200 and ("key", "back") in worker.puts
+        # non-JSON content-type rejected (CSRF hardening)
+        req = urllib.request.Request(base + "/api/screen/tap", data=b"cx=1",
+                                     method="POST", headers={"Content-Type": "text/plain"})
+        try:
+            urllib.request.urlopen(req, timeout=5); code = 200
+        except urllib.error.HTTPError as e:
+            code = e.code
+        assert code == 415
+    finally:
+        httpd.shutdown()
+
+
 def test_webui_export_and_download(tmp_path):
     import os
     import threading

@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, unquote
 
 from .adb import connect
 from .worker import Worker
+from .screen import ScreenBuffer, view_to_device
 
 
 class State:
@@ -44,6 +45,7 @@ class State:
         self.pending: str | None = None  # room we asked to open
         self.messages: list[dict] = []
         self.status = "starting …"
+        self.login_needed = False
         self.exports: dict[str, dict] = {}     # export id -> {ready, token?, name?, error?}
         self.downloads: dict[str, dict] = {}   # token -> {path, name, mime}
 
@@ -57,7 +59,8 @@ class State:
                     if isinstance(m, dict) else {"kind": "text", "text": m}
                     for m in self.messages]
             return {"seq": self.seq, "rooms": self.rooms, "room": self.room,
-                    "messages": msgs, "status": self.status}
+                    "messages": msgs, "status": self.status,
+                    "login_needed": self.login_needed}
 
     def export_pending(self, xid: str):
         with self.lock:
@@ -125,6 +128,10 @@ class State:
                 if msgs == self.messages:
                     return
                 self.messages = msgs
+            elif kind == "login":
+                if data == self.login_needed:
+                    return
+                self.login_needed = data
             self._bump()
 
 
@@ -151,12 +158,23 @@ def _safe_name(raw: str) -> str:
     return safe
 
 
-def make_handler(worker: Worker, state: State, tmpdir: str):
+def make_handler(worker: Worker, state: State, tmpdir: str,
+                 screen: ScreenBuffer, screen_enabled: bool):
     class Handler(BaseHTTPRequestHandler):
         server_version = "kakao-cli-webui"
 
         def log_message(self, *a):  # silence per-request logging (1s polling)
             pass
+
+        def _csrf_ok(self) -> bool:
+            # control is state-changing: require same-origin (if an Origin is sent)
+            origin = self.headers.get("Origin")
+            if origin:
+                host = self.headers.get("Host", "")
+                from urllib.parse import urlparse
+                if urlparse(origin).netloc != host:
+                    return False
+            return True
 
         def _send(self, code, body: bytes, ctype):
             self.send_response(code)
@@ -209,6 +227,28 @@ def make_handler(worker: Worker, state: State, tmpdir: str):
                 if not d or not os.path.exists(d["path"]):
                     return self._json(404, {"error": "expired"})
                 self._serve_file(d["path"], d["name"], d["mime"])
+            elif path == "/api/screen/info":
+                if screen_enabled:
+                    screen.touch()     # polling info keeps the viewer alive (cheap)
+                seq, frame, w, h = screen.get()
+                self._json(200, {"enabled": screen_enabled, "seq": seq,
+                                 "w": w, "h": h, "has_frame": bool(frame)})
+            elif path == "/api/screen/frame":
+                if not screen_enabled:
+                    return self._json(403, {"error": "screen disabled"})
+                screen.touch()      # mark a viewer so the worker captures
+                end = time.time() + 3.0
+                while not screen.get()[1] and time.time() < end:
+                    time.sleep(0.1)
+                _seq, frame, _w, _h = screen.get()
+                if not frame:
+                    return self._json(503, {"error": "no frame yet"})
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(frame)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(frame)
             else:
                 self._json(404, {"error": "not found"})
 
@@ -281,34 +321,99 @@ def make_handler(worker: Worker, state: State, tmpdir: str):
             elif self.path == "/api/rooms":
                 worker.put("rooms")
                 self._json(200, {"ok": True})
+            elif self.path.startswith("/api/screen/"):
+                self._screen_control()
+            else:
+                self._json(404, {"error": "not found"})
+
+        def _screen_control(self):
+            if not screen_enabled:
+                return self._json(403, {"error": "screen disabled"})
+            if "application/json" not in (self.headers.get("Content-Type") or ""):
+                return self._json(415, {"error": "json only"})
+            if not self._csrf_ok():
+                return self._json(403, {"error": "cross-origin blocked"})
+            body = self._read_json()
+            op = self.path[len("/api/screen/"):]
+            _seq, frame, w, h = screen.get()
+            if op in ("tap", "swipe") and (not w or not h):
+                return self._json(409, {"error": "no frame yet"})
+            if op == "tap":
+                x, y = view_to_device(_num(body.get("cx")), _num(body.get("cy")),
+                                      _num(body.get("ew")), _num(body.get("eh")), w, h)
+                worker.put("tap", x, y)
+                self._json(200, {"ok": True, "x": x, "y": y})
+            elif op == "swipe":
+                ew, eh = _num(body.get("ew")), _num(body.get("eh"))
+                x1, y1 = view_to_device(_num(body.get("cx1")), _num(body.get("cy1")), ew, eh, w, h)
+                x2, y2 = view_to_device(_num(body.get("cx2")), _num(body.get("cy2")), ew, eh, w, h)
+                ms = max(50, min(3000, int(_num(body.get("ms"), 200))))
+                worker.put("swipe", x1, y1, x2, y2, ms)
+                self._json(200, {"ok": True})
+            elif op == "key":
+                name = body.get("name")
+                if name not in ("back", "home", "enter"):
+                    return self._json(400, {"error": "bad key"})
+                worker.put("key", name)
+                self._json(200, {"ok": True})
+            elif op == "text":
+                text = body.get("text") or ""
+                if not text:
+                    return self._json(400, {"error": "empty text"})
+                worker.put("screentext", text)
+                self._json(200, {"ok": True})
             else:
                 self._json(404, {"error": "not found"})
 
     return Handler
 
 
-def serve(worker: Worker, host: str, port: int, tmpdir: str = None) -> ThreadingHTTPServer:
+def _num(v, default=0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
+          screen: ScreenBuffer = None, screen_enabled: bool = True) -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
     if tmpdir is None:
         tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
+    if screen is None:
+        screen = ScreenBuffer()
     threading.Thread(target=_pump, args=(worker, state), daemon=True).start()
-    httpd = ThreadingHTTPServer((host, port), make_handler(worker, state, tmpdir))
+    httpd = ThreadingHTTPServer(
+        (host, port), make_handler(worker, state, tmpdir, screen, screen_enabled))
     httpd.daemon_threads = True
     return httpd
 
 
-def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800):
+def _is_local(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1", "")
+
+
+def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_screen=False):
     dev = connect(serial, addr, adb=adb)
     tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
-    worker = Worker(dev, export_dir=tmpdir)
+    screen = ScreenBuffer()
+    # the screen view is full-account remote control; off by default on non-local
+    # binds unless explicitly allowed
+    screen_enabled = _is_local(host) or allow_screen
+    worker = Worker(dev, export_dir=tmpdir, screen=screen)
     worker.start()
-    httpd = serve(worker, host, port, tmpdir=tmpdir)
+    httpd = serve(worker, host, port, tmpdir=tmpdir, screen=screen,
+                  screen_enabled=screen_enabled)
     shown = host if host not in ("0.0.0.0", "") else "<vm-ip>"
     print(f"kakao-cli webui on http://{shown}:{port}  (Ctrl-C to stop)")
-    if host in ("0.0.0.0", ""):
+    print(f"  screen view/control: {'ON' if screen_enabled else 'OFF'}")
+    if not _is_local(host):
         print("  WARNING: bound to all interfaces with no auth — anyone on the "
               "network can control this KakaoTalk account.")
+        if not screen_enabled:
+            print("  screen view/control is OFF (non-local bind); pass --allow-screen "
+                  "to enable it (even higher risk).")
         print("  Prefer the default 127.0.0.1 + an SSH tunnel: "
               f"ssh -L {port}:127.0.0.1:{port} <vm>")
     try:
@@ -401,6 +506,33 @@ PAGE = r"""<!doctype html>
   .send:hover{background:var(--line)}
   .empty{color:var(--dim);padding:8px 12px}
   .inputline.drop{outline:2px dashed var(--accent);outline-offset:-4px}
+  .scrbtn{color:var(--accent);padding:4px 8px;border-radius:4px;white-space:nowrap}
+  .scrbtn:hover{background:var(--line)}
+  .statusbar{display:flex;align-items:center;gap:8px}
+  .statusbar #status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .statusbar .scrbtn{min-height:32px}
+  .banner{background:#4d3b1a;color:var(--unread);padding:6px 12px;
+    border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
+  .banner[hidden]{display:none}
+  .banner button{color:var(--accent);font-weight:bold;border:1px solid var(--accent);
+    border-radius:4px;padding:2px 8px}
+  /* live device screen overlay */
+  .screenovl .scrpanel{max-width:520px;margin:0 auto;height:100%;display:flex;
+    flex-direction:column;padding:8px}
+  .scrbar{display:flex;gap:6px;align-items:center;padding:4px 0;flex:0 0 auto}
+  .scrbar button{color:var(--accent);border:1px solid var(--line);border-radius:4px;
+    padding:6px 10px;min-height:40px}
+  .scrbar button:hover{background:var(--line)}
+  .scrbar .fps{margin-left:auto;color:var(--dim);font-size:12px}
+  .scrwrap{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;
+    background:#000;border:1px solid var(--line);border-radius:4px}
+  #scr{max-width:100%;max-height:100%;object-fit:contain;touch-action:none;
+    user-select:none;-webkit-user-select:none}
+  .scrinput{display:flex;gap:6px;padding:6px 0;flex:0 0 auto;
+    padding-bottom:calc(6px + var(--safe-b))}
+  .scrinput input{flex:1;background:transparent;border:1px solid var(--line);
+    border-radius:4px;color:var(--fg);font-family:inherit;font-size:16px;padding:8px;outline:none}
+  .scrinput button{color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:0 14px;min-height:40px}
 
   /* overlays: quick switcher + help (unicode/text only, TUI tone) */
   .ovl{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:20;
@@ -433,12 +565,16 @@ PAGE = r"""<!doctype html>
 </style></head>
 <body data-view="list">
   <div class="bar" id="header"></div>
+  <div class="banner" id="loginbanner" hidden>
+    로그인이 필요합니다 — <button id="loginopen">화면 열기</button>
+  </div>
   <div class="main">
     <div class="list" id="list" role="listbox" aria-label="채팅방 목록"></div>
     <div class="pane">
       <div class="title bar" id="title">
         <button class="back" id="back" aria-label="목록으로">←</button>
         <span id="titletext">(select a room)</span>
+        <button class="scrbtn" id="scrbtn" title="기기 화면 (g)" aria-label="기기 화면">⧉ 화면</button>
       </div>
       <div class="msgs" id="msgs" role="log" aria-live="polite"><div class="empty">—</div></div>
       <button class="newmsg" id="newmsg" aria-label="새 메시지로 이동">새 메시지 ↓</button>
@@ -453,7 +589,10 @@ PAGE = r"""<!doctype html>
       </div>
     </div>
   </div>
-  <div class="bar" id="status" role="status">starting …</div>
+  <div class="bar statusbar" id="statusbar">
+    <span id="status" role="status">starting …</span>
+    <button class="scrbtn" id="scrbtn2" title="기기 화면 (g)" aria-label="기기 화면">⧉ 화면</button>
+  </div>
 
   <div class="ovl" id="switcher">
     <div class="panel">
@@ -466,6 +605,23 @@ PAGE = r"""<!doctype html>
     <div class="panel">
       <h3>키 도움말</h3>
       <div class="help" id="helptext"></div>
+    </div>
+  </div>
+  <div class="ovl screenovl" id="screenovl">
+    <div class="scrpanel">
+      <div class="scrbar">
+        <button id="scrclose">✕ 닫기</button>
+        <button id="kbback">Back</button>
+        <button id="kbhome">Home</button>
+        <button id="kbenter">Enter</button>
+        <span class="fps" id="fps"></span>
+      </div>
+      <div class="scrwrap"><img id="scr" alt="기기 화면" draggable="false"></div>
+      <div class="scrinput">
+        <input id="scrtext" type="text" placeholder="화면에 텍스트 입력(한글 OK)"
+               autocomplete="off" spellcheck="false">
+        <button id="scrsend">입력</button>
+      </div>
     </div>
   </div>
 <script>
@@ -486,6 +642,7 @@ const HELP =
   '<b>Esc</b>  목록으로 · <b>r</b> 새로고침 · <b>+</b> 파일\n' +
   '<b>m</b>  현재 방 조용히(알림/배지 제외) 토글\n' +
   '<b>n</b>  탭이 숨겨졌을 때 알림 켜기/끄기\n' +
+  '<b>g</b>  기기 화면 보기·조작(로그인용)\n' +
   '<b>?</b>  이 도움말';
 const $ = id => document.getElementById(id);
 $("header").innerHTML = HINT;
@@ -627,6 +784,7 @@ function render(){
   if(title!==prevTitle){ prevTitle=title; $("titletext").textContent = title; }
   renderMessages();
   $("inputline").className = "inputline" + (focus==="input" ? "" : " blur");
+  $("loginbanner").hidden = !st.login_needed;
   const status = " " + (st.status||"");
   if(status!==prevStatus){ prevStatus=status; $("status").textContent = status; }
 }
@@ -740,6 +898,7 @@ function jumpRoom(dir, unreadOnly){
 // keyboard — mirror the TUI key map (desktop); input stays usable on mobile
 document.addEventListener("keydown", (e)=>{
   // overlays capture their own keys first
+  if($("screenovl").classList.contains("show")){ if(e.key==="Escape") closeScreen(); return; }
   if($("switcher").classList.contains("show")){ switcherKey(e); return; }
   if($("helpovl").classList.contains("show")){ if(e.key==="Escape"||e.key==="?") closeOverlays(); return; }
 
@@ -770,6 +929,7 @@ document.addEventListener("keydown", (e)=>{
   else if(e.key==="r"){ post("/api/rooms"); }
   else if(e.key==="m"){ toggleQuiet(st.room); }
   else if(e.key==="n"){ toggleNotify(); }
+  else if(e.key==="g"){ openScreen(); }
 });
 input.addEventListener("focus", ()=>{ if(focus!=="input"){ focus="input"; render(); }});
 input.addEventListener("input", autogrow);
@@ -807,7 +967,6 @@ function switcherKey(e){
   else if(e.key==="ArrowUp"){ e.preventDefault(); qsel=Math.max(0,qsel-1); renderSwitcher(); }
   else if(e.key==="Enter"){ e.preventDefault(); const o=qlist[qsel]; if(o){ sel=o.idx; closeOverlays(); openSel(); } }
 }
-document.querySelectorAll(".ovl").forEach(o=> o.addEventListener("click", e=>{ if(e.target===o) closeOverlays(); }));
 
 // file attach: + opens the picker, selection uploads to the open room
 $("attach").addEventListener("click", ()=>{
@@ -836,6 +995,60 @@ const pane = document.querySelector(".pane");
 ["dragenter","dragover"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); $("inputline").classList.add("drop"); }));
 ["dragleave","drop"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); $("inputline").classList.remove("drop"); }));
 pane.addEventListener("drop", e=>{ const f=e.dataTransfer && e.dataTransfer.files[0]; if(f) uploadFile(f); });
+
+// ---- live device screen view/control (for re-login) ----
+let scrOn=false, fpsCount=0, fpsT=Date.now(), scrSeq=0;
+function openScreen(){ $("screenovl").classList.add("show"); if(!scrOn){ scrOn=true; scrSeq=0; pollFrame(); } }
+function closeScreen(){ scrOn=false; $("screenovl").classList.remove("show"); }
+// poll the tiny /info (keeps the viewer alive) and only fetch a new frame when the
+// capture seq changed — avoids re-downloading identical frames (mobile bandwidth)
+function pollFrame(){
+  if(!scrOn) return;
+  fetch("/api/screen/info").then(r=>r.json()).then(j=>{
+    if(!scrOn) return;
+    if(j.seq && j.seq !== scrSeq){
+      scrSeq = j.seq;
+      const nx = new Image();
+      nx.onload = ()=>{
+        if(!scrOn) return;
+        $("scr").src = nx.src;
+        fpsCount++; const now=Date.now();
+        if(now-fpsT >= 1000){ $("fps").textContent = fpsCount+" fps"; fpsCount=0; fpsT=now; }
+      };
+      nx.src = "/api/screen/frame?seq=" + j.seq;
+    }
+    setTimeout(pollFrame, 250);
+  }).catch(()=>{ if(scrOn) setTimeout(pollFrame, 600); });
+}
+async function scrPost(path, body){
+  try{ await fetch("/api/screen/"+path, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); }catch(e){}
+}
+const scr = $("scr");
+let pd = null;
+scr.addEventListener("pointerdown", e=>{ e.preventDefault(); pd={x:e.offsetX,y:e.offsetY,t:Date.now()};
+  try{ scr.setPointerCapture(e.pointerId); }catch(_){} });
+scr.addEventListener("pointerup", e=>{
+  if(!pd) return;
+  const ew=scr.clientWidth, eh=scr.clientHeight;
+  const dx=e.offsetX-pd.x, dy=e.offsetY-pd.y;
+  if(Math.hypot(dx,dy) > 12){
+    scrPost("swipe",{cx1:pd.x,cy1:pd.y,cx2:e.offsetX,cy2:e.offsetY,ew,eh,ms:Math.max(120,Date.now()-pd.t)});
+  } else {
+    scrPost("tap",{cx:pd.x,cy:pd.y,ew,eh});
+  }
+  pd=null;
+});
+$("scrbtn").onclick = openScreen;
+$("scrbtn2").onclick = openScreen;
+$("loginopen").onclick = openScreen;
+$("scrclose").onclick = closeScreen;
+$("kbback").onclick = ()=> scrPost("key",{name:"back"});
+$("kbhome").onclick = ()=> scrPost("key",{name:"home"});
+$("kbenter").onclick = ()=> scrPost("key",{name:"enter"});
+$("scrsend").onclick = ()=>{ const t=$("scrtext").value; if(t){ scrPost("text",{text:t}); $("scrtext").value=""; } };
+$("scrtext").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); $("scrsend").click(); } e.stopPropagation(); });
+document.querySelectorAll(".ovl").forEach(o=> o.addEventListener("click", e=>{ if(e.target===o){ if(o.id==="screenovl") closeScreen(); else closeOverlays(); } }));
 
 // keep the input line visible when the mobile keyboard opens (visualViewport)
 function fitViewport(){

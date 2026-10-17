@@ -130,7 +130,7 @@ def cmd_tui(args) -> int:
 def cmd_webui(args) -> int:
     from . import webui
     webui.run(serial=args.serial, addr=args.addr, adb=args.adb,
-              host=args.host, port=args.port)
+              host=args.host, port=args.port, allow_screen=args.allow_screen)
     return 0
 
 
@@ -233,6 +233,9 @@ def build_parser():
             sp.add_argument("--host", default="127.0.0.1", metavar="HOST",
                             help="bind address (default: 127.0.0.1; 0.0.0.0 exposes it unauthenticated)")
             sp.add_argument("--port", type=int, default=8800, metavar="PORT", help="TCP port (default: 8800)")
+            sp.add_argument("--allow-screen", action="store_true",
+                            help="enable the live screen view/control on a non-local --host "
+                                 "(full-account remote control; off by default when not on 127.0.0.1)")
         sp.set_defaults(func=fn)
     return ap
 

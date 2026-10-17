@@ -21,7 +21,7 @@ class Worker(threading.Thread):
                                ("export_error", dict)
     """
 
-    def __init__(self, dev, poll_interval=2.5, export_dir=None):
+    def __init__(self, dev, poll_interval=2.5, export_dir=None, screen=None):
         super().__init__(daemon=True)
         from .driver import Driver
         self.d = Driver(dev)
@@ -30,7 +30,10 @@ class Worker(threading.Thread):
         self.room: str | None = None
         self.poll_interval = poll_interval
         self.export_dir = export_dir
+        self.screen = screen            # ScreenBuffer or None (live device view)
         self.last_detailed: list = []
+        self.login_needed = False
+        self._last_login_check = 0.0
         self._stop = False
 
     def put(self, *cmd):
@@ -43,8 +46,23 @@ class Worker(threading.Thread):
         try:
             self._refresh_rooms()
         except Exception as e:
-            self._emit("status", f"rooms load failed: {e} (press r to retry)")
+            if not self._maybe_login():
+                self._emit("status", f"rooms load failed: {e} (press r to retry)")
         while not self._stop:
+            # live screen view: capture frames fast and keep controls responsive;
+            # pause the periodic chat poll so there's no adb contention.
+            if self.screen is not None and self.screen.active():
+                self._capture()
+                try:
+                    cmd = self.cmds.get(timeout=0.25)
+                except queue.Empty:
+                    cmd = None
+                if cmd is not None:
+                    try:
+                        self._handle(cmd)
+                    except Exception as e:
+                        self._emit("status", f"err: {e}")
+                continue
             try:
                 cmd = self.cmds.get(timeout=self.poll_interval)
             except queue.Empty:
@@ -78,6 +96,17 @@ class Worker(threading.Thread):
                 self._send_file(cmd[1])
         elif op == "export":
             self._export(*cmd[1:])
+        elif op == "tap":
+            self.d.dev.tap(cmd[1], cmd[2])
+        elif op == "swipe":
+            self.d.dev.swipe(*cmd[1:])
+        elif op == "key":
+            code = {"back": "KEYCODE_BACK", "home": "KEYCODE_HOME",
+                    "enter": "KEYCODE_ENTER"}.get(cmd[1])
+            if code:
+                self.d.dev.keyevent(code)
+        elif op == "screentext":
+            self.d.dev.type_text(cmd[1])
         elif op == "poll":
             if self.room:
                 self._poll_messages()
@@ -145,6 +174,39 @@ class Worker(threading.Thread):
                     self._poll_messages()
                 except Exception:
                     pass
+
+    def _capture(self):
+        try:
+            self.screen.set_frame(self.d.dev.screencap_bytes())
+        except Exception as e:
+            self._emit("status", f"screen capture err: {e}")
+        self._maybe_login()
+
+    def _maybe_login(self) -> bool:
+        """Throttled login/onboarding detection. Emits a 'login' event on change
+        and, when login completes, reloads the room list. Returns current state."""
+        import time
+        from .screen import is_login_screen
+        now = time.time()
+        if now - self._last_login_check < 2.0:
+            return self.login_needed
+        self._last_login_check = now
+        try:
+            act = self.d.activity() or ""
+        except Exception:
+            return self.login_needed
+        login = is_login_screen(act)
+        if login != self.login_needed:
+            self.login_needed = login
+            self._emit("login", login)
+            if login:
+                self._emit("status", "로그인이 필요합니다 — 화면 열기")
+            else:
+                try:
+                    self._refresh_rooms()   # login finished → load rooms
+                except Exception:
+                    pass
+        return login
 
     def _refresh_rooms(self):
         self._emit("status", "loading rooms …")

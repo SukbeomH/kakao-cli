@@ -111,6 +111,20 @@ class Device:
         if p.returncode != 0:
             raise AdbUnavailable("screencap failed")
 
+    def screencap_bytes(self) -> bytes:
+        """Grab the current screen as a PNG, in memory (never written to disk)."""
+        p = subprocess.run([self.adb, "-s", self.serial, "exec-out", "screencap", "-p"],
+                           capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+        if p.returncode != 0:
+            raise AdbUnavailable("screencap failed")
+        return p.stdout
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, ms: int = 200) -> None:
+        self.shell(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {int(ms)}")
+
+    def keyevent(self, code) -> None:
+        self.shell(f"input keyevent {code}")
+
 
 def list_devices(adb: str = "adb") -> list[str]:
     try:
