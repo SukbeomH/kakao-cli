@@ -222,3 +222,14 @@
 
 - **연속 생략 메커니즘**: 같은 발신자의 첫 메시지만 `profile`+`nickname`, 이후 동일 발신자는 `message`(+`chat_info`)만. 1:1·그룹 구조 동일.
 - **결론(B 범위)**: `sender`·`is_mine`·날짜행(`time_line`)만 추가 추출. 시각·읽음수·시스템행은 미확정이라 **표시하지 않음**(추측 금지 원칙).
+
+### 웹UI 메신저 개선 — A 화면만 (2026-10-17, 새 데이터 없음)
+state의 기존 방 데이터(last_message/time/members_count)만으로 프런트 개선. driver/서버 무변경.
+- **방 목록 2줄 행**: `.r1`(이름+인원+시각 우측) / `.r2`(dim 미리보기 + unread 배지 우측). 모바일 `.row`는 `flex-direction:column`.
+- **입력 textarea**: 자동 높이, Enter 전송·Shift+Enter(및 Ctrl+Enter 수동삽입) 줄바꿈, `enterkeyhint=send`, 방별 초안 `localStorage(kakao.draft:<room>)` 보존(방 떠날 때 저장·열 때 로드·전송 시 삭제). 이미지 붙여넣기(paste)·드래그앤드롭 → 기존 `/api/sendfile` 재사용(`uploadFile`).
+- **빠른 전환**: `/` 또는 Ctrl+K 오버레이, 방이름 subsequence 퍼지 필터, ↑↓/Enter/Esc.
+- **탐색 키**: Alt+↑/↓ 이전·다음 방, Alt+Shift+↑/↓ 안읽음 방만(입력 중에도 동작). `?` 도움말 오버레이. 단일 키(r/m/n/ /?)는 입력 포커스 중 미발동(keydown에서 `e.target===input` 분기).
+- **알림/배지**: `document.title="(N) kakao"`(조용한 방 제외 합계). `m` 현재 방 조용히 토글(`kakao.quiet`), `n` opt-in 알림 토글(권한은 토글 시 요청, `document.hidden`일 때만 + 조용한 방 제외). 방 행에 조용히 `●` 표시.
+- **접근성**: 행 `data-room`+`role=option`+`aria-selected`, 메시지 `role=log`, 상태 `role=status`, 미디어 `<button>`(기존).
+- **금지 준수**: 제3자·CDN 없음, 말풍선 기본값/`maximum-scale` 미변경, 바인드 기본값 불변.
+- **검증**: 단위 10/10. 브라우저 e2e(`webui_features.js`): 2줄 행 구조 확인 → `/` 퀵스위처로 자기채팅 열기 → Shift+Enter 줄바꿈(`line1\nline2`) 확인 → Enter 전송 → adb readback. 데스크톱/모바일/스크롤/송수신 전체 e2e PASS. 스크린샷 갱신(`/home/agent/kakao-tasks/shots/`).
