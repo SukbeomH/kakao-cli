@@ -189,3 +189,14 @@
 - **API**: `POST /api/export{kind,rank,name}`→202 `{id}`; `GET /api/export/<id>`→`{ready,token|error}`; `GET /api/download/<token>`→파일 스트림(`Content-Disposition: attachment; filename*=UTF-8''…`, mime는 확장자 매핑). 워커가 export_dir(webui tmpdir)로 pull. 같은 `(kind,name)`은 이름, 사진/영상은 same-kind 내 rank로 fresh dump에서 재매칭(폴 사이 목록 변동 대비).
 - **검증**: 단위 10개(스텁 워커 export→download 바이트 일치 포함). 브라우저 e2e(`webui_recv.js`, playwright download 이벤트 캡처): 자기채팅에서 송신한 zip·png를 클릭→다운로드→**유효 zip/PNG 바이트 확인**. 전체 e2e(송신 text/문서/이미지 + 수신 문서/이미지) PASS, TUI e2e 회귀 PASS.
 - 후속: 영상 수신(사진과 동일 경로 가정, 실검증 대기), 썸네일 인라인 표시(screencap 크롭), 만료된 말풍선(Expiry 경과) 처리.
+
+### 웹 UI 모바일 웹 지원 (2026-10-17)
+- **반응형 단일화면 전환**: 좁은 화면(≤720px, `@media`)은 방 목록 ↔ 대화 화면으로 전환(`body[data-view]`). 방 탭→대화(`history.pushState`), 타이틀 바 **[←]** 또는 **브라우저 뒤로가기**(`popstate`)로 목록 복귀. 데스크톱은 기존 2-pane 유지. 키보드 힌트 바는 모바일에서 숨김.
+- **터치**: 행·버튼 44px, 입력줄에 **[보내기]** 버튼(키보드 Enter와 병행), `+` 터치 크기 확대, `⤓` 받기 버블은 `<button>`으로 탭 가능+진행표시(`dl-busy`). `@media (hover:none)`에서 `:active` 피드백.
+- **뷰포트/키보드**: `height:100dvh`(+`100vh` fallback), `env(safe-area-inset-*)` 반영(viewport-fit=cover), `visualViewport` resize로 body 높이 보정해 가상 키보드 올라와도 입력줄 노출. 입력 `font-size:16px`로 iOS 확대 방지(`maximum-scale`은 쓰지 않음).
+- **스크롤 보존**: 메시지는 기기의 *보이는 창*이라 새 메시지 도착 시 창이 이동(순수 append 아님). 정책 단순화 — 바닥에 있었으면 따라가고(`wasBottom`), 위로 올려둔 상태면 `scrollTop` 복원 + **"새 메시지 ↓"** pill. `replaceChildren`가 scrollTop을 0으로 리셋하므로 갱신 전 위치를 저장해 복원. 데스크톱도 동일.
+- **렌더 최적화**: 서버 `State.apply`가 rooms/status/messages **실제 변경 시에만 seq 증가**(워커가 2.5s마다 동일 내용 재emit → 매번 bump하면 DOM 재생성·깜빡임·입력 포커스 상실). 클라이언트 `render()`는 rooms/선택/메시지/상태/타이틀을 각각 diff해 바뀐 부분만 갱신, 입력 요소는 재생성하지 않아 포커스 유지.
+- **접근성**: 메시지 영역 `role=log`, 방 목록 `role=listbox`+`aria-selected`, 상태바 `role=status`, 미디어 행 `<button>`.
+- **금지 준수**: 제3자 의존·CDN 없음(인라인 PAGE), 기본 바인드 127.0.0.1·0.0.0.0 경고 유지, `maximum-scale` 미사용. 폰 접속은 SSH 터널/Tailscale 권장만 README에 안내.
+- **검증**: 단위 10/10. 브라우저 e2e(playwright 기기 에뮬 iPhone-13 viewport+hasTouch+isMobile): 목록→방 탭→대화 전환(list display:none 확인)→한글 입력→**[보내기] 탭**→status sent→adb readback→**[← 목록]**→목록 복귀. 데스크톱 송신/수신 회귀 + 스크롤 보존 테스트(`webui_scroll.js`: 위로 올린 뒤 새 메시지 도착 시 top 유지+pill) 통과. 스크린샷 3장(아래).
+- 스크린샷: `/tmp/webui_desktop.png`, `/tmp/webui_mobile_list.png`, `/tmp/webui_mobile_convo.png`.

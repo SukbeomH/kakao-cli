@@ -94,6 +94,19 @@ Received photo/video/file bubbles show a
 (download) affordance; clicking one drives the app to Save that item to the
 device, pulls it, and serves it to the browser with its original name \[em] only
 ever the visible bubble in the open room (no DB, no chatId guessing).
+The page is responsive: on phones (\[<=] 720px) it becomes a single-screen
+list \[<->] conversation flow with a
+.B [\[u2190]]
+back button, a
+.B [\[uBCF4]\[uB0B4]\[uAE30]]
+(send) button, 44px touch targets, and virtual-keyboard-aware sizing
+.RB ( 100dvh ,
+safe-area,
+.BR visualViewport ).
+Serve it only over localhost or a private tunnel (SSH \fB-L\fR, Tailscale) \[em]
+never bind
+.B 0.0.0.0
+to reach it from a phone.
 .B \-\-host
 (default 127.0.0.1) and
 .B \-\-port
