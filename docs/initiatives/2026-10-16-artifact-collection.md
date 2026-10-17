@@ -200,3 +200,25 @@
 - **금지 준수**: 제3자 의존·CDN 없음(인라인 PAGE), 기본 바인드 127.0.0.1·0.0.0.0 경고 유지, `maximum-scale` 미사용. 폰 접속은 SSH 터널/Tailscale 권장만 README에 안내.
 - **검증**: 단위 10/10. 브라우저 e2e(playwright 기기 에뮬 iPhone-13 viewport+hasTouch+isMobile): 목록→방 탭→대화 전환(list display:none 확인)→한글 입력→**[보내기] 탭**→status sent→adb readback→**[← 목록]**→목록 복귀. 데스크톱 송신/수신 회귀 + 스크롤 보존 테스트(`webui_scroll.js`: 위로 올린 뒤 새 메시지 도착 시 top 유지+pill) 통과. 스크린샷 3장(아래).
 - 스크린샷: `/tmp/webui_desktop.png`, `/tmp/webui_mobile_list.png`, `/tmp/webui_mobile_convo.png`.
+
+### 웹UI 메신저 개선 — B0 화면 구조 조사 (2026-10-17, 읽기 전용)
+자기채팅·1:1(idx4)·그룹(idx1) 라이브 `uiautomator dump` 조사. 원본 덤프는 로컬 `/tmp/b0_*.xml`(미커밋), 값은 마스킹. 화면폭 1600px.
+
+**B0 필드 표** (chat_log_recycler_list 행 기준):
+
+| 필드 | resource-id / 판정 | 값 형식 | 확정 |
+|---|---|---|---|
+| 본문 | `message` | 텍스트 | ✓ |
+| 발신자 | `nickname` (TextView) | 상대 표시명. **연속 메시지는 생략** → 직전 발신자 상속 | ✓ |
+| 프로필 | `profile` (아바타, content-desc) | 이름 포함 가능하나 `nickname`이 깔끔 | ✓(보조) |
+| is_mine | **기하**: `message_container` 우측모서리 x2≈1569(우측여백 밀착, 비율>0.93)=내 것 / 수신은 좌측열 x1≈840 고정 | nickname 유무만으론 연속수신과 구분 불가 → 기하 필요 | ✓(휴리스틱) |
+| 날짜 구분행 | `time_line` (별도 row) | 날짜 문자열(예: "YYYY년 M월 D일 요일") | ✓ |
+| 인용답장 | `source_layout`/`source_nickname_prefix`/`source_nickname`/`source_message` | 답장 대상 원문(발신자 아님 주의) | ✓ |
+| 파일 | `txt_size`(+`bubble`,`message`=파일명) | (기존) | ✓ |
+| 사진/영상 | `image`/`video` | (기존) | ✓ |
+| **시각** | — | `chat_info` 노드는 있으나 **텍스트 비어있음**(커스텀 드로잉) → uiautomator 미노출 | ✗ 표시안함 |
+| **읽음수("1")** | — | 메시지 주변 standalone 숫자 노드 없음(members_count/toolbar count만 존재) | ✗ 표시안함 |
+| **시스템 메시지** | — | 가시 창에서 미관측, 전용 rid 미확정 | ✗ 표시안함 |
+
+- **연속 생략 메커니즘**: 같은 발신자의 첫 메시지만 `profile`+`nickname`, 이후 동일 발신자는 `message`(+`chat_info`)만. 1:1·그룹 구조 동일.
+- **결론(B 범위)**: `sender`·`is_mine`·날짜행(`time_line`)만 추가 추출. 시각·읽음수·시스템행은 미확정이라 **표시하지 않음**(추측 금지 원칙).
