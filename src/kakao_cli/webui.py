@@ -949,7 +949,10 @@ document.addEventListener("keydown", (e)=>{
       const s=input.selectionStart, v=input.value;
       input.value=v.slice(0,s)+"\n"+v.slice(input.selectionEnd);
       input.selectionStart=input.selectionEnd=s+1; autogrow(); }
-    else if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); sendCurrent(); }
+    // ignore Enter while a Korean/IME syllable is still composing — otherwise the
+    // send fires early and the final syllable lingers and gets sent again
+    else if(e.key==="Enter" && !e.shiftKey && !e.isComposing && e.keyCode!==229){
+      e.preventDefault(); sendCurrent(); }
     // Shift+Enter falls through to the textarea's default newline
     return;                       // single keys (r, /, ?) must not fire while typing
   }
@@ -1080,7 +1083,7 @@ $("kbback").onclick = ()=> scrPost("key",{name:"back"});
 $("kbhome").onclick = ()=> scrPost("key",{name:"home"});
 $("kbenter").onclick = ()=> scrPost("key",{name:"enter"});
 $("scrsend").onclick = ()=>{ const t=$("scrtext").value; if(t){ scrPost("text",{text:t}); $("scrtext").value=""; } };
-$("scrtext").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); $("scrsend").click(); } e.stopPropagation(); });
+$("scrtext").addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.isComposing && e.keyCode!==229){ e.preventDefault(); $("scrsend").click(); } e.stopPropagation(); });
 document.querySelectorAll(".ovl").forEach(o=> o.addEventListener("click", e=>{ if(e.target===o){ if(o.id==="screenovl") closeScreen(); else closeOverlays(); } }));
 
 // keep the input line visible when the mobile keyboard opens (visualViewport)

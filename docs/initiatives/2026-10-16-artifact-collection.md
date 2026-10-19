@@ -249,3 +249,6 @@ B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환:
 - **표시 안 함(추측 금지)**: 시각·읽음수(uiautomator 미노출, `chat_info` 비어있음), 시스템행(미확정).
 - **프런트(IRC형)**: `보낸사람 │ 본문` 한 줄(flex, 이름 열 8ch 우정렬·ellipsis, hanging indent). 연속 동일 발신자는 이름 `·` 생략(클라가 prevKey로 판정, 날짜행에서 리셋). 내 메시지는 `나`+`--me` 색. 발신자 이름은 해시 6색(WeeChat식). 날짜 구분선 `──── <날짜> ────`는 `position:sticky`로 스크롤 중 상단 고정. 미디어/파일은 같은 줄의 `⤓` 버튼(`.dlbtn`)으로 유지.
 - **검증**: 단위 15/15. 자기채팅(100% 내 메시지)→전부 `나`/`·`로 is_mine 정확 확인. 그룹방 구조(마스킹 카운트): 내 메시지 우측·상대 이름+색·연속 `·`. 전체 webui e2e(수신 셀렉터 `.dlbtn`로 갱신, 송수신/모바일/스크롤/A기능) PASS. 스크린샷 갱신.
+
+### webui 버그 수정 — 한글 IME 마지막 글자 중복 전송 (2026-10-19)
+증상: 웹UI textarea에서 한글 메시지 Enter 전송 시 **마지막 글자가 별도 메시지로 한 번 더** 전송(`아아 테스트`→`트`). 원인: 마지막 음절이 **조합 중(isComposing)** 일 때 Enter가 먼저 `sendCurrent()`를 호출→전체 전송 후 조합이 끝나며 남은 글자가 빈 입력창에 들어가 다음 Enter로 재전송. `send_in_room`(driver)은 정상(직접 호출 중복 없음) — 순수 프런트 IME 처리 버그. 수정: 입력창·화면텍스트 Enter 핸들러에 `!e.isComposing && e.keyCode!==229` 가드. 검증: `tests/webui_ime.js`(조합 중 Enter=전송0, 조합 후 Enter=전체1회) + 정상 전송 device-verified. e2e에 스텝 추가.

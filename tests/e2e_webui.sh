@@ -87,6 +87,11 @@ SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_features.js" "http://$VM_IP:$PORT
 readback "$FMSG" || fail "feature message not found in self-chat"
 echo "   features OK (device-verified)"
 
+echo "4i) IME: Enter while composing must not double-send"
+SELF_NAME="$SELF_NAME" node "$ROOT/tests/webui_ime.js" "http://$VM_IP:$PORT" \
+  || fail "IME guard test failed"
+echo "   IME OK"
+
 echo "5) document (zip) send via the '+' picker"
 ZIP="/tmp/kc_e2e_${SESS}_$(date +%H%M%S).zip"
 python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('hello.txt','hi'); z.close()" "$ZIP" \
