@@ -365,3 +365,17 @@ B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환:
   - 로그인 유지 확인(MainActivity, chat_logs 1134→1135+), `rooms --source db` 55개.
   - 발견·수정: 새 컨테이너 adbd 가 shell 권한 → DB 읽기 실패. `compose-boot.sh` 에 부팅마다 `adb root` 추가.
 - 보류(사용자): ADB 키 인증(`ro.adb.secure`), 맥 Lima 실기동·로그인. 진행: SQLCipher 프로필 이름 + 메시지 type 매핑(Codex).
+
+### 후속 5 — 새 프로필 DB 의존성 게이트 (2026-10-20)
+
+- 사용자 지시 TASK_profile_types.md, 시작 SHA `989301ae5c47ab332762de0c68a3acfd87c64342`.
+  현재 브랜치 codex-db, 시작 작업트리 깨끗함. 이미 전환된 라이브 compose 서비스는 수정하지 않는다.
+- crypto_user_database / crypto_database를 기기 내 sqlite3 -readonly로 조회했으나
+  file is not a database. 내장 SQLite의 cipher_version 없음. adb 종료 코드0만으로
+  성공으로 오판하지 않고 stdout JSON 파싱으로 오류를 검증했다.
+- bridge @097a9b8의 1차 구현은 해당 프로필 DB에 SQLCipher OPEN_READONLY 사용.
+  기기 내 SQLCipher4 읽기 전용 엔진이 필요하므로 **새 프로필 이름 조회는 미완료·대기**.
+  실제 키로 열리는지/암호 파라미터는 아직 실증하지 않았다.
+- Hermes 검토용 `/home/agent/kakao-tasks/REPORT_profile_dependency_codex.md`와
+  [저장소 의존성 보고](../verification/2026-10-20-profile-dependency.md)를 작성했다.
+  키 파일 접근/새 의존성/엔진 배치/DB 사본 반출 없음. 다른 독립 단계는 계속한다.
