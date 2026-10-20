@@ -116,6 +116,27 @@ ARM VM은 x86 VM의 /data를 가져오지 않고 새 데이터로 로그인한�
 - 호스트 CLI(VM 셸)는 부팅 후 `adb connect 127.0.0.1:5555`(또는 `--connect`)가 필요하다(예전엔 kakao-boot.sh 가 연결).
 - 롤백: 아래 5번 절차 그대로(`compose stop` → `systemctl enable --now kakao-redroid.service` → 기존 kwebui 명령).
 
+### 갱신 배포 (2026-10-20 `44b44f4`, SQLCipher 프로필 반영)
+
+```bash
+# 제어 호스트 저장소에서. 이전 배포본은 ~/kakao-compose.prev 로 보관.
+git archive --format=tar --prefix=kakao-compose/ HEAD | ssh agent@192.168.0.30 \
+  'rm -rf ~/kakao-compose.new && mkdir ~/kakao-compose.new && tar -x -C ~/kakao-compose.new && \
+   rm -rf ~/kakao-compose.prev && mv ~/kakao-compose ~/kakao-compose.prev && \
+   mv ~/kakao-compose.new/kakao-compose ~/kakao-compose && rmdir ~/kakao-compose.new'
+ssh agent@192.168.0.30 'cd ~/kakao-compose && export COMPOSE_DISABLE_ENV_FILE=1 && \
+  F="-f deploy/compose.yaml -f deploy/compose.live.yaml" && \
+  docker compose $F build webui && docker compose $F up -d --no-deps webui'   # redroid 무중단
+```
+
+- SQLCipher 엔진·helper(공개 배포물, 해시 고정)는 이미지에 넣지 않는다. VM 캐시
+  `~/.cache/kakao-cli/sqlcipher-4.10.0/`를 webui 컨테이너의 캐시 볼륨에 한 번 복사했다:
+  `docker cp ~/.cache/kakao-cli/sqlcipher-4.10.0 kakao-webui-1:/root/.cache/kakao-cli/`
+  (명명 볼륨이라 재빌드·재시작에도 유지. `down -v`를 하면 다시 복사해야 한다.)
+- VM 셸 CLI(`~/kakao-cli/src`)도 같은 커밋으로 동기화(`rsync -a --delete src/kakao_cli/ …`).
+- 컨테이너 안 CLI는 `--serial redroid:5555`, VM 셸 CLI는 `--serial 127.0.0.1:5555`.
+- 확인: 웹 200, 영상 ~17fps, `rooms` DB 55개 중 이름 55개(VM 셸·컨테이너 모두), 기기 임시 helper 잔여 0.
+
 ## 현행 systemd에서 전환/롤백 (원 절차)
 
 현행 `kakao-redroid.service`는 `kakao-boot.sh`로 기존 `redroid`를 시작한다.

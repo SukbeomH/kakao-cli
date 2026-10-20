@@ -423,3 +423,9 @@ B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환:
   일회성 helper 실증만 수행. 운영 배포·다른 ABI·ADB 인증·Mac 실기동은 남겨 둔다.
 - [해시·출처·계약·실증 보고](../verification/2026-10-20-profile-sqlcipher.md),
   [준비·실패 시 ID 유지](../db-receive.md#선택적-sqlcipher-프로필-준비) 갱신.
+
+### 운영 반영 — SQLCipher 프로필·타입 매핑 배포 (2026-10-20, Hermes)
+- `codex-db` 81fe2af(타입·삭제 상태·오픈채팅 이름), a2df2f3/44b44f4(기기 내부 SQLCipher 프로필) 검토 후 푸시 → master ff. 테스트 158 통과(재실행), 커밋에 so/aar/jar/dex·키·본문 없음.
+- 운영 VM: webui 컨테이너만 재빌드·재시작(redroid 무중단), SQLCipher 캐시를 컨테이너 캐시 볼륨에 복사, VM 셸 CLI 소스 동기화. 방 이름 55/55(VM 셸·컨테이너), 기기 helper 잔여 0, 웹 200·~17fps.
+- README·`docs/deploy-compose.md`·`docs/db-receive.md`를 compose 운영 기준으로 갱신(tmux kwebui 절차 폐기, 컨테이너 CLI는 `--serial redroid:5555`).
+- 보류 유지: ADB 키 인증, 맥 Lima 실기동·로그인.

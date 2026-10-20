@@ -5,7 +5,9 @@
 
 - 텍스트·이미지·영상·문서 **송신**, 방별 **수신 폴링**, 미디어 **수집**
 - **태블릿(서브 기기)**으로 로그인해 기존 폰과 **공존**
-- Proxmox VM에서 **재부팅 자동복구**(systemd), 로그인 영속
+- **읽기 전용 DB 수신**: 방 목록·메시지·종류·읽음수, 기기 내부 SQLCipher로 방 이름까지(화면 조작 없음)
+- 웹 기기 콘솔(화면·키보드·파일·클립보드), 대화형 TUI
+- Proxmox VM에서 **docker compose로 상시 구동**(재부팅 자동복구), 로그인 영속
 
 > 비공식 자동화는 카카오 정책 위반 소지가 있다. 본인 계정, 소규모, 사람 유사 속도로만 사용하라.
 
@@ -23,13 +25,17 @@
 ## 동작 방식
 
 ```
-[제어 호스트]  --- adb (TCP 5555) --->  [Linux VM]
-  kakao-cli (Python + cryptography)         redroid (Android 14, libndk ARM 변환)
-                                           └ com.kakao.talk  (태블릿 지문으로 로그인)
+[Linux VM — docker compose]
+  redroid (Android 14, libndk ARM 변환)  ← adb 127.0.0.1:5555 (LAN 비노출)
+  └ com.kakao.talk (태블릿 지문으로 로그인)
+  boot   (1회: adb root·앱·권한·IME 준비)
+  webui  (kakao-cli 웹 콘솔, :8800)        kakao-cli CLI/TUI (VM 셸 또는 컨테이너)
 ```
 
-- CLI는 Python 3.11+, `cryptography>=41`, `adb`가 필요하다. DB 수신은 AES-CBC로 메모리에서만 복호화한다. UI는 `uiautomator dump`로
-  읽고 resource-id/좌표로 조작한다. 한글 입력은 **ADBKeyBoard IME** 경유.
+- CLI는 Python 3.11+, `cryptography>=41`, `adb`가 필요하다.
+- **수신은 DB**: 기기 안에서 `sqlite3 -readonly`로 조회하고 본문은 AES-CBC로 메모리에서만 복호화한다
+  (adbd root 필요). 방·친구 이름은 새 암호화 프로필 DB를 기기 안에서 공식 SQLCipher로 읽는다.
+- **송신은 UI**: `uiautomator dump`로 읽고 resource-id/좌표로 조작한다. 한글 입력은 **ADBKeyBoard IME** 경유.
 - Android는 host 커널의 **binder**가 필요하다(전용 VM이 자체 커널로 제공).
 - 카카오톡 네이티브 라이브러리는 ARM 전용 → x86_64에선 redroid의 **libndk 변환** 필요.
 
@@ -43,8 +49,9 @@
 
 ## 환경 구축
 
-Proxmox VM에 redroid를 올리는 전체 절차는 **[docs/setup-waydroid.md](docs/setup-waydroid.md)**.
-요약:
+**현재 운영 구성은 docker compose**다(아래 [Linux compose](#linux-compose--apple-silicon-mac)).
+redroid 수동 기동과 VM 준비(binder, 태블릿 지문, 로그인) 전체 절차는
+**[docs/setup-waydroid.md](docs/setup-waydroid.md)**. 수동 기동 요약:
 
 ```bash
 # VM 안에서 (binder 커널 모듈 필요: linux-modules-extra-$(uname -r))
@@ -54,22 +61,31 @@ scripts/run-redroid.sh                 # 태블릿 지문으로 redroid 기동
 # 로그인: 폰 카카오톡 → 더보기 → QR 스캔 (헤드리스에선 QR이 가장 간단)
 ```
 
-재부팅 자동복구는 `scripts/kakao-redroid.service` + `scripts/kakao-boot.sh`를 설치하면 된다
-(binder 로드·binderfs 마운트·컨테이너 기동·앱 실행·권한·IME까지 자동).
+예전 systemd 방식(`scripts/kakao-redroid.service` + `scripts/kakao-boot.sh`)은 compose 전환 후
+**비활성화**했고 롤백용으로만 남겨 둔다.
 
 ### Linux compose / Apple Silicon Mac
 
-새 구성은 [deploy/compose.yaml](deploy/compose.yaml), 맥은
-[deploy/lima.yaml](deploy/lima.yaml) + [ARM 오버레이](deploy/compose.lima.yaml)다.
-ADB·웹은 기본 loopback, 기존 `/opt/redroid/data` 보존, binderfs 노드는 개별 bind한다.
-**`docker compose down -v` 금지**. 이번 작업에서는 파일/정적 검증만 수행했다.
-실제 전환·Mac 로그인은 별도 승인 후 [Linux/맥 실행·이전·롤백 절차](docs/deploy-compose.md)를 따른다.
+기본 구성은 [deploy/compose.yaml](deploy/compose.yaml)(redroid · boot · webui). ADB·웹은 기본 loopback,
+데이터는 기존 `/opt/redroid/data`를 그대로 bind한다. 호스트 binder는 `kakao-binder.service`
+(`scripts/install-binder.sh`)가 부팅 시 준비한다. **`docker compose down -v` 금지**(캐시 볼륨 삭제).
+
+**운영 VM(192.168.0.30)은 2026-10-20 compose로 전환했다.** VM 전용 오버레이
+[deploy/compose.live.yaml](deploy/compose.live.yaml)로 기존 redroid 실행 인자를 그대로 유지하고
+웹 콘솔만 LAN(`192.168.0.30:8800`)에 연다. adb는 `127.0.0.1:5555`에만 열린다.
 
 ```bash
-COMPOSE_DISABLE_ENV_FILE=1 docker compose -f deploy/compose.yaml config --quiet
-# Mac: 승인 후 만든 Lima VM에서, 기본값은 config 검증
-scripts/lima-compose.sh config --quiet
+# 배포/갱신 (제어 호스트의 저장소에서)
+git archive --format=tar --prefix=kakao-compose/ HEAD | ssh agent@192.168.0.30 'tar -x -C ~'
+ssh agent@192.168.0.30 'cd ~/kakao-compose && export COMPOSE_DISABLE_ENV_FILE=1 && \
+  docker compose -f deploy/compose.yaml -f deploy/compose.live.yaml up -d --build'
+# 웹 콘솔만 갱신(redroid 무중단): ... build webui && ... up -d --no-deps webui
+# 상태: docker ps  → kakao-redroid-1(healthy) · kakao-boot-1(Exited 0) · kakao-webui-1
 ```
+
+Apple Silicon Mac은 [deploy/lima.yaml](deploy/lima.yaml) + [ARM 오버레이](deploy/compose.lima.yaml)
+(정적 검증만, 실기동 보류 — 태블릿 로그인은 기기 1대라 맥 로그인 시 VM 세션이 끊긴다).
+전환·롤백·맥 절차는 [docs/deploy-compose.md](docs/deploy-compose.md).
 
 ## 설치 / 실행
 
@@ -78,8 +94,11 @@ scripts/lima-compose.sh config --quiet
 uv sync                      # 또는: pip install -e .
 kakao doctor --connect 10.0.0.30:5555
 
-# 소스로 바로 실행 (VM 배포 시)
+# 소스로 바로 실행 (VM 셸, adb는 127.0.0.1:5555)
 PYTHONPATH=src python3 -m kakao_cli doctor --serial 127.0.0.1:5555
+
+# compose 컨테이너 안에서 실행 (기기 이름은 redroid:5555)
+docker exec -it kakao-webui-1 python -m kakao_cli rooms --serial redroid:5555
 ```
 
 Docker로 OS 무관 실행:
@@ -134,16 +153,16 @@ kakao webui --connect 10.0.0.30:5555           # http://127.0.0.1:8800
 ssh -L 8800:127.0.0.1:8800 agent@192.168.0.30  # 원격 VM이면 SSH 터널 → 로컬 브라우저로 localhost:8800
 ```
 
-VM에 소스로 배포해 LAN에서 상시 띄우는 예(무인증 — **신뢰하는 LAN 전용**, 공용망 노출 금지):
+운영 VM에서는 compose의 **`webui` 컨테이너**가 상시 띄운다(무인증 — **신뢰하는 LAN 전용**,
+공용망 노출 금지). 예전 tmux `kwebui` 방식은 쓰지 않는다.
 
 ```bash
-scp src/kakao_cli/*.py agent@192.168.0.30:kakao-cli/src/kakao_cli/
-ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
-  "cd ~/kakao-cli && PYTHONPATH=src python3 -m kakao_cli webui \
-   --host 192.168.0.30 --port 8800 --allow-screen --serial 127.0.0.1:5555"'
 # 접속: http://192.168.0.30:8800 (http → MSE 영상, 클립보드는 토스트/Ctrl+V 수동)
-# 종료: ssh agent@192.168.0.30 tmux kill-session -t kwebui  (SIGHUP에도 jar·forward·잠금 정리)
+ssh agent@192.168.0.30 docker restart kakao-webui-1   # 재시작(종료 시 jar·forward·잠금 정리)
+ssh agent@192.168.0.30 docker logs --tail 20 kakao-webui-1
 ```
+
+컨테이너의 "로컬" 파일 패널은 VM 홈이 아니라 명명 볼륨 `/files`다.
 
 콘솔 탭이 열려 가상 디스플레이를 쓰는 동안 UI 소스·송신류는 `console_busy`(종료 코드 7)로 거절된다.
 
@@ -219,8 +238,9 @@ ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
   사용자 승인된 선택적 프로필 경로는 공식 SQLCipher Android4.10.0을 기기 내부에서
   `OPEN_READONLY`로 실행한다. [helper 준비](docs/db-receive.md#선택적-sqlcipher-프로필-준비)가
   없거나 조회에 실패하면 기존 이름/ID를 유지한다. 키와 DB 사본은 기기 밖으로 보내지 않는다.
-  [실키 검증](docs/verification/2026-10-20-profile-sqlcipher.md): 방 이름17/55 → 55/55,
-  메시지1,135행 본문·종류·is_mine 일치. 이번 코드는 운영 서비스에 배포하지 않았다.
+  [실키 검증](docs/verification/2026-10-20-profile-sqlcipher.md): 방 이름 17/55 → 55/55,
+  메시지 1,135행 본문·종류·is_mine 일치. 운영 VM에 배포했다(VM 셸·webui 컨테이너 모두 55/55 확인).
+  SQLCipher 경로는 검증한 앱 버전(26.8.3)에서만 켜지고, 앱이 업데이트되면 기존 이름/ID로 돌아간다.
 - **`watch`(보조)**: OS 알림(`dumpsys notification`)을 읽는다. **앱이 백그라운드**여야
   알림이 뜬다(포그라운드면 즉시 읽음 처리). 방 무관하게 잡지만 음소거/포커스 방은 놓친다.
 
@@ -244,14 +264,22 @@ src/kakao_cli/
   notify.py     알림 기반 수신 파서(watch)
   media.py      미디어 블롭 pull + 매직바이트 타입
   errors.py     구조화 오류 코드 / 종료 코드
+  kakaodb.py    읽기 전용 DB 수신(기기 내부 sqlite3, 메모리 복호화, 종류·읽음수)
+  receiver.py   수신 소스 선택(DB 기본, UI 폴백)
+  profiles.py   기기 내부 SQLCipher 프로필 이름 조회(고정 해시 엔진·helper)
+  resources/    ProfileReader.java (helper 소스)
+  worker.py, tui.py, fs.py, screen.py  TUI 작업자·화면·파일
   webui.py      웹 콘솔(stdlib HTTP): 화면·입력·파일·클립보드·영상 API + 페이지
   scrcpy.py     scrcpy-server 고정/검증·프로토콜·세션(제어+영상 소켓)
   video.py      영상 허브(시청자 팬아웃·가상 디스플레이 크기/flex·미러 폴백)
   fmp4.py       MSE용 최소 fMP4 muxer
   consolelock.py 기기측 콘솔 잠금(CLI/TUI 거절)
   ioutil.py     JSON/텍스트 출력
-scripts/        run-redroid.sh, kakao-boot.sh, kakao-redroid.service, provision-waydroid.sh
-docs/           setup-waydroid.md, kakao.1(man), initiatives/*(설계·분석·원장)
+deploy/         compose.yaml, compose.live.yaml(운영 VM), compose.lima.yaml, lima.yaml
+scripts/        compose-boot.sh, install-binder.sh, kakao-binder.service, prepare-binder.sh,
+                lima-compose.sh, build-profile-helper.py, (구) run-redroid.sh·kakao-boot.sh·kakao-redroid.service
+docs/           db-receive.md, deploy-compose.md, setup-waydroid.md, kakao.1(man),
+                verification/*(검증 기록), initiatives/*(설계·분석·원장)
 completions/    bash/zsh 자동완성
 ```
 
@@ -259,6 +287,9 @@ completions/    bash/zsh 자동완성
 
 - 설계: [docs/initiatives/2026-10-16-design.md](docs/initiatives/2026-10-16-design.md)
 - 환경 구축: [docs/setup-waydroid.md](docs/setup-waydroid.md)
+- compose·Lima 배포/롤백: [docs/deploy-compose.md](docs/deploy-compose.md)
+- DB 수신·SQLCipher 프로필: [docs/db-receive.md](docs/db-receive.md)
+- 검증 기록: [docs/verification/](docs/verification/)
 - man page: `man -l docs/kakao.1`
 - 수집·분석 원장: [docs/initiatives/2026-10-16-artifact-collection.md](docs/initiatives/2026-10-16-artifact-collection.md)
 - 선행 사례 분석: [docs/initiatives/2026-10-16-prior-art.md](docs/initiatives/2026-10-16-prior-art.md)

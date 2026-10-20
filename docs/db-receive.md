@@ -107,6 +107,8 @@ AndroidX SQLite2.2.0만 버전·SHA-256 고정으로 받는다. 공개 배포물
 `~/.cache/kakao-cli/sqlcipher-4.10.0/`에만 둔다. Python 의존성 추가는 없다.
 helper 재현 빌드가 고정 해시와 다르면 설치하지 않으며 실행도 거절한다.
 실행 호스트마다 해당 캐시를 준비해야 한다. Docker 이미지에는 포함하지 않는다.
+운영 VM에서는 VM 셸 캐시와 webui 컨테이너 캐시 볼륨 양쪽에 준비돼 있다
+([갱신 배포](deploy-compose.md#갱신-배포-2026-10-20-44b44f4-sqlcipher-프로필-반영)).
 
 기기는 기존 root 권한이 필요하며 helper가 `adb root`를 요청하거나 서비스를 재시작하지 않는다.
 공개 helper/라이브러리만 `/data/local/tmp/kakao-cli-profile-helper`에 배치하고 기기에서도
