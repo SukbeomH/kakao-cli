@@ -128,6 +128,24 @@ by default on a non-local
 pass
 .B \-\-allow-screen
 to enable it there.
+A
+.B console
+mode (toggle in the top bar or
+.BR c )
+puts that live screen in the center \[em] click/drag to tap/swipe, click it to
+route the keyboard to the device (Korean via ADBKeyBoard; Backspace/Enter/arrows
+as allow-listed keycodes; Esc releases) \[em] with two file managers on the left:
+the device storage (default
+.IR /sdcard/ )
+above and the webui host's disk below, copying files between them with
+.I adb pull/push
+(copy only: no move, delete or overwrite \[em] name clashes get a
+.B \-N
+suffix).
+.BI \-\-fs-root " PATH"
+(default
+.IR ~ )
+confines the local pane.
 .TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
