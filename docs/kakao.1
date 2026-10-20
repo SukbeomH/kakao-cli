@@ -118,6 +118,19 @@ is given. Console APIs accept only IP\-literal or localhost Hosts plus
 (DNS\-rebinding guard); control POSTs need JSON and same\-origin, uploads an
 .B X\-Kakao\-Op
 header. Prefer an SSH tunnel or a private network.
+With scrcpy\-server (third party, Apache\-2.0, pinned v5.0.1, sha256\-verified,
+downloaded once into
+.I ~/.cache/kakao-cli/
+or given offline with
+.BI \-\-scrcpy-server " PATH" ;
+.B \-\-no-scrcpy
+disables it) the console shares the clipboard: a device copy shows a toast with
+a copy button (auto\-copy option on https/localhost), and Ctrl/Cmd+V on the
+screen pastes text into the focused field on the device or uploads pasted
+images/files to
+.IR /sdcard/Download .
+Clipboard text is kept in memory only. The device jar, adb forward and server
+process are removed when the web UI stops (SIGTERM/SIGHUP included).
 .TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
