@@ -145,7 +145,15 @@ suffix).
 .BI \-\-fs-root " PATH"
 (default
 .IR ~ )
-confines the local pane.
+confines the local pane. Each pane also uploads from the browser
+(button or drag-and-drop; raw streamed body, atomic no-clobber placement,
+.BI \-\-max-upload " SIZE"
+default 2G, free-space check) and downloads to the browser (device files are
+streamed with
+.IR "adb exec-out cat" ).
+Console APIs accept only IP-literal or localhost Hosts plus
+.BI \-\-allow-host " NAME"
+(DNS-rebinding guard).
 .TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
