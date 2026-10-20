@@ -24,7 +24,9 @@ export CHROME="${CHROME:-/home/agent/.cache/ms-playwright/chromium-1243/chrome-l
 
 UPL="up-$TS.bin"; UPA="dev-$TS.bin"; WORK="$(mktemp -d)"
 HOLDPID=""
-cleanup(){ if [ -n "$HOLDPID" ]; then exec 8>&- 2>/dev/null; wait "$HOLDPID" 2>/dev/null; HOLDPID=""; fi
+TUN=""
+cleanup(){ [ -n "$TUN" ] && kill "$TUN" 2>/dev/null; TUN=""
+  if [ -n "$HOLDPID" ]; then exec 8>&- 2>/dev/null; wait "$HOLDPID" 2>/dev/null; HOLDPID=""; fi
   rm -rf "$WORK"; ssh "$VM" "adb -s $SER shell am broadcast -a ADB_CLEAR_TEXT >/dev/null 2>&1; \
   adb -s $SER shell rm -f '/sdcard/Download/$PUSH' '/sdcard/Download/$UPA' >/dev/null 2>&1; \
   tmux kill-session -t $SESS 2>/dev/null; rm -rf '$ROOTDIR'" 2>/dev/null; }
@@ -223,7 +225,7 @@ ssh -N -L "$TPORT:127.0.0.1:$PORT" "$VM" & TUN=$!
 sleep 2
 vrun "$WORK/v2.out" env RENDER=wc node "$ROOT/tests/webui_video.js" "http://localhost:$TPORT" \
   || { kill $TUN; fail "video e2e (desktop, WebCodecs) failed"; }
-kill $TUN 2>/dev/null
+kill $TUN 2>/dev/null; TUN=""
 vd_idle || fail "not back on display 0 after the WebCodecs viewer"
 vrun "$WORK/v3.out" env MOBILE=1 SHOT="$VSHOT-mobile.png" node "$ROOT/tests/webui_video.js" "http://$VM_IP:$PORT" \
   || fail "video e2e (mobile) failed"
