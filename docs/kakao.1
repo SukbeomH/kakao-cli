@@ -84,76 +84,40 @@ Interactive terminal UI: browse rooms, read live, and send. Tab toggles focus,
 arrows/Enter pick a room, type + Enter sends, q quits.
 .TP
 .B webui
-Serve the same UI in a browser (stdlib HTTP, no deps). The input line's
-.B +
-control attaches a file or image (uploaded, then sent into the open room via
-the same path as
-.BR send-file ).
-Received photo/video/file bubbles show a
-.B \[u2913]
-(download) affordance; clicking one drives the app to Save that item to the
-device, pulls it, and serves it to the browser with its original name \[em] only
-ever the visible bubble in the open room (no DB, no chatId guessing).
-The page is responsive: on phones (\[<=] 720px) it becomes a single-screen
-list \[<->] conversation flow with a
-.B [\[u2190]]
-back button, a
-.B [\[uBCF4]\[uB0B4]\[uAE30]]
-(send) button, 44px touch targets, and virtual-keyboard-aware sizing
-.RB ( 100dvh ,
-safe-area,
-.BR visualViewport ).
-Serve it only over localhost or a private tunnel (SSH \fB-L\fR, Tailscale) \[em]
-never bind
-.B 0.0.0.0
-to reach it from a phone.
-.B \-\-host
-(default 127.0.0.1) and
-.B \-\-port
-(default 8800) bind the server; the keymap mirrors
-.BR tui .
-.B \-\-host 0.0.0.0
-exposes account control unauthenticated \[em] prefer an SSH tunnel.
-A live device-screen view (open with
-.B g
-or the \[u2969] button) streams the tablet via repeated
-.I screencap
-(captured only while watched, never written to disk) and lets you tap/swipe/type
-and press Back/Home/Enter \[em] for re-login (QR, security code, onboarding) and
-clearing stuck popups. Because that is full-account remote control, the screen
-API is
-.B off
-by default on a non-local
-.BR \-\-host ;
-pass
-.B \-\-allow-screen
-to enable it there.
-A
-.B console
-mode (toggle in the top bar or
-.BR c )
-puts that live screen in the center \[em] click/drag to tap/swipe, click it to
-route the keyboard to the device (Korean via ADBKeyBoard; Backspace/Enter/arrows
-as allow-listed keycodes; Esc releases) \[em] with two file managers on the left:
-the device storage (default
+A device console in the browser (stdlib HTTP, no deps). The web UI has no chat
+mode \[em] use
+.B tui
+and the other commands for chat. The live device screen sits in the center:
+click/drag to tap/swipe; clicking it routes the keyboard to the device (Korean
+via ADBKeyBoard after composition; Backspace/Enter/arrows etc. as allow\-listed
+keycodes; Esc releases). Two file managers on the left \[em] device storage
+(default
 .IR /sdcard/ )
-above and the webui host's disk below, copying files between them with
-.I adb pull/push
-(copy only: no move, delete or overwrite \[em] name clashes get a
+above, the webui host's disk below \[em] copy files between them
+.RI ( "adb pull/push" ;
+copy only, never move/delete/overwrite; clashes get a
 .B \-N
-suffix).
+suffix), upload from the browser (button or drag\-and\-drop; streamed, atomic,
+.BI \-\-max-upload " SIZE"
+default 2G, free\-space check) and download to it (device files streamed with
+.IR "adb exec-out cat" ).
 .BI \-\-fs-root " PATH"
 (default
 .IR ~ )
-confines the local pane. Each pane also uploads from the browser
-(button or drag-and-drop; raw streamed body, atomic no-clobber placement,
-.BI \-\-max-upload " SIZE"
-default 2G, free-space check) and downloads to the browser (device files are
-streamed with
-.IR "adb exec-out cat" ).
-Console APIs accept only IP-literal or localhost Hosts plus
+confines the local pane.
+.B \-\-host
+(default 127.0.0.1) and
+.B \-\-port
+(default 8800) bind the server. The console is full\-account remote control, so
+on a non\-local
+.B \-\-host
+it is off unless
+.B \-\-allow-screen
+is given. Console APIs accept only IP\-literal or localhost Hosts plus
 .BI \-\-allow-host " NAME"
-(DNS-rebinding guard).
+(DNS\-rebinding guard); control POSTs need JSON and same\-origin, uploads an
+.B X\-Kakao\-Op
+header. Prefer an SSH tunnel or a private network.
 .TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
