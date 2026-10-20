@@ -7,9 +7,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md NOTICE ./
 COPY src ./src
-RUN pip install --no-cache-dir .
+COPY scripts/compose-boot.sh ./scripts/compose-boot.sh
+RUN python -m venv /app/.venv \
+ && /app/.venv/bin/pip install --no-cache-dir .
+ENV PATH="/app/.venv/bin:$PATH"
+RUN mkdir -p /files /root/.cache/kakao-cli
 
 # adb must reach the redroid host (e.g. the Waydroid/redroid VM) over the network.
 # Example: docker run --rm kakao-cli doctor --connect 192.168.0.30:5555

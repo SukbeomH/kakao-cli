@@ -330,3 +330,30 @@ B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환:
   [개수·불리언만 기록한 실행 증거](../verification/2026-10-20-db-compose.md).
 - 안전: 송신0, DB 반출0, 복호화 본문/이름 저장0, 라이브 redroid 재시작/재생성0.
   VM 소스 배포만 수행, 기존 tmux kwebui 유지.
+
+### compose·Apple Silicon Lima C (2026-10-20, 정적 검증만)
+
+- D를 보강해 최종 커밋 `c128ea8577e9aabc5c7f35fd5390ee278a7c10f4`로 정리했다.
+  DB JSON 형식 가드, 동명 방 TUI 송신 거절, UI dump 파일 미생성을 포함한다.
+  시작 SHA는 `45c9edb1c67c82aeab18da910c93f544404ec8c1`이다.
+- 기본 결정: Android 데이터는 기존 `/opt/redroid/data` bind 재사용(복사 없음),
+  인증은 `ro.adb.secure=0`, 웹·adb 공개는 loopback, `use_memfd=1`.
+  기존 위장 인자 10개 전부 보존, Linux digest는 실제 VM image inspect로 고정했다.
+  Lima는 64only digest 고정, Ubuntu24.04 arm64/vz/mounts=[], 웹8800만 loopback 전달.
+- binderfs 노드 개별 bind와 Docker 이전 준비 유닛 제공. 신규 호스트 준비는 compose 밖.
+  boot는 앱·권한·IME만 준비하고 HOME, 웹은 /files·캐시·adb 상태 명명 볼륨 사용.
+  Lima 래퍼는 Git 추적 코드만 전달하고 기본 config --quiet, down -v 거절.
+- bridge(MIT) 참고 구성의 저작권/라이선스를 NOTICE에 포함하고 배포 패키지에도 포함했다.
+  [Linux/맥/인증 옵션/현행 systemd 전환·롤백 절차](../deploy-compose.md) 작성.
+- 검증: VM Compose v5.6.0 Linux/ARM overlay config 모두 통과,
+  정적 안전 조건 전부 true, registry digest/arm64 검증, 셸4개·provision 문법 통과,
+  binder unit systemd-analyze verify 통과, Lima YAML 파싱 통과.
+  shellcheck/limactl 부재는 미실행으로 구분했다. 컨테이너 이미지 빌드·기동·전환 없음.
+- 최종 단위/회귀 **104 통과**, sdist/wheel 빌드와 deploy/NOTICE 포함 확인.
+  D 보강 후 실기 재검증도 1,105/1,105, UI9개 일치·실제 잠금 경계 전부 true.
+  VM 배포 Python 모듈7개 해시가 로컬과 일치했다.
+- 종료 점검: redroid 시작 시각 유지, 재시작0, 실행 redroid1개, kwebui 세션 유지.
+  전송0/DB 반출0/복호화 본문·이름 저장0, 푸시하지 않는다.
+- 사용자 결정은 질문 없이 기본값으로 보류: ①실제 Linux 전환 ②Mac VM/로그인
+  ③ADB 인증강제(off) ④LAN 공개(loopback). SQLCipher 프로필/미확정 type은 후속.
+  [최종 검증·결정 기록](../verification/2026-10-20-db-compose.md).

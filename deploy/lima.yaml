@@ -1,0 +1,100 @@
+# Apple Silicon 전용 신규 VM. bridge @097a9b8(MIT) 구성을 참고, NOTICE 참조.
+minimumLimaVersion: 2.0.0
+base:
+  - template:_images/ubuntu-24.04
+vmType: vz
+arch: aarch64
+cpus: 6
+memory: 8GiB
+disk: 40GiB
+mounts: []
+containerd:
+  system: false
+  user: false
+ssh:
+  forwardAgent: false
+  loadDotSSHPubKeys: false
+portForwards:
+  - guestPort: 8800
+    hostPort: 8800
+    hostIP: 127.0.0.1
+  - guestPortRange: [1, 65535]
+    proto: any
+    ignore: true
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      [ "$(getconf PAGESIZE)" = 4096 ] || { echo '4K 페이지 커널이 필요합니다' >&2; exit 1; }
+      apt-get update
+      apt-get install -y docker.io docker-compose-v2 python3 adb "linux-modules-extra-$(uname -r)"
+      cat > /usr/local/sbin/kakao-prepare-binder <<'BINDER_SCRIPT'
+      #!/usr/bin/env bash
+      # Ubuntu/Linux 호스트 준비. compose 밖에서, 승인한 신규 호스트/전환 때만 실행.
+      # binderfs 방식 참고: kakaotalk-bridge(MIT), NOTICE 참조.
+      set -euo pipefail
+      [[ "$EUID" -eq 0 ]] || { echo 'root 권한이 필요합니다' >&2; exit 1; }
+      [[ "$(getconf PAGESIZE)" == 4096 ]] || { echo 'redroid는 4K 페이지 커널이 필요합니다' >&2; exit 1; }
+      modprobe binder_linux devices=binder,hwbinder,vndbinder
+      mkdir -p /dev/binderfs
+      mountpoint -q /dev/binderfs || mount -t binder binder /dev/binderfs
+      # mount 직후 binder-control만 있는 커널에서는 BINDER_CTL_ADD로 노드를 할당한다.
+      # Linux UAPI include/uapi/linux/android/binderfs.h: char name[256], u32 major/minor.
+      python3 - <<'PYTHON'
+      import fcntl
+      import os
+      import stat
+      import struct
+
+      root = '/dev/binderfs'
+      size = struct.calcsize('256sII')
+      request = (3 << 30) | (size << 16) | (ord('b') << 8) | 1
+      for name in ('binder', 'hwbinder', 'vndbinder'):
+          path = root + '/' + name
+          if not os.path.exists(path):
+              with open(root + '/binder-control', 'rb', buffering=0) as control:
+                  fcntl.ioctl(control.fileno(), request, bytearray(struct.pack('256sII', name.encode(), 0, 0)), True)
+          if not stat.S_ISCHR(os.stat(path).st_mode):
+              raise RuntimeError('binderfs 문자 장치가 아닙니다')
+          os.chmod(path, 0o660)
+      PYTHON
+      BINDER_SCRIPT
+      chmod 0755 /usr/local/sbin/kakao-prepare-binder
+      cat > /etc/systemd/system/kakao-binder.service <<'BINDER_UNIT'
+      [Unit]
+      Description=Kakao redroid binderfs devices
+      After=systemd-modules-load.service
+      Before=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/kakao-prepare-binder
+
+      [Install]
+      WantedBy=multi-user.target
+      BINDER_UNIT
+      mkdir -p /etc/systemd/system/docker.service.d
+      cat > /etc/systemd/system/docker.service.d/kakao-binder.conf <<'DOCKER_UNIT'
+      [Unit]
+      Requires=kakao-binder.service
+      After=kakao-binder.service
+      DOCKER_UNIT
+      mkdir -p /opt/redroid/data
+      systemctl daemon-reload
+      systemctl enable --now kakao-binder.service
+      systemctl enable --now docker
+probes:
+  - script: |
+      #!/bin/bash
+      set -euo pipefail
+      test "$(getconf PAGESIZE)" = 4096
+      test -c /dev/binderfs/binder
+      test -c /dev/binderfs/hwbinder
+      test -c /dev/binderfs/vndbinder
+      sudo systemctl is-active --quiet kakao-binder.service
+      sudo docker info >/dev/null
+      sudo docker compose version
+    hint: 게스트의 /var/log/cloud-init-output.log와 binder 서비스를 확인하세요.

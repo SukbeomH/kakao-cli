@@ -1,0 +1,12 @@
+[Unit]
+Description=Kakao redroid binderfs devices
+After=systemd-modules-load.service
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/kakao-prepare-binder
+
+[Install]
+WantedBy=multi-user.target

@@ -57,6 +57,20 @@ scripts/run-redroid.sh                 # 태블릿 지문으로 redroid 기동
 재부팅 자동복구는 `scripts/kakao-redroid.service` + `scripts/kakao-boot.sh`를 설치하면 된다
 (binder 로드·binderfs 마운트·컨테이너 기동·앱 실행·권한·IME까지 자동).
 
+### Linux compose / Apple Silicon Mac
+
+새 구성은 [deploy/compose.yaml](deploy/compose.yaml), 맥은
+[deploy/lima.yaml](deploy/lima.yaml) + [ARM 오버레이](deploy/compose.lima.yaml)다.
+ADB·웹은 기본 loopback, 기존 `/opt/redroid/data` 보존, binderfs 노드는 개별 bind한다.
+**`docker compose down -v` 금지**. 이번 작업에서는 파일/정적 검증만 수행했다.
+실제 전환·Mac 로그인은 별도 승인 후 [Linux/맥 실행·이전·롤백 절차](docs/deploy-compose.md)를 따른다.
+
+```bash
+COMPOSE_DISABLE_ENV_FILE=1 docker compose -f deploy/compose.yaml config --quiet
+# Mac: 승인 후 만든 Lima VM에서, 기본값은 config 검증
+scripts/lima-compose.sh config --quiet
+```
+
 ## 설치 / 실행
 
 ```bash

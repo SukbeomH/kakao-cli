@@ -1,0 +1,99 @@
+# 정적 검증 완료 후 별도 승인으로 전환할 구성. 라이브 redroid에 up 금지.
+# 구성 참고: rokrokss/kakaotalk-bridge @097a9b8 (MIT), NOTICE 참조.
+name: kakao
+services:
+  redroid:
+    image: redroid/redroid:14.0.0-latest@sha256:a3e654caad74faed03cd5ead057a989e06f507778cda678e5d3b9772e0092f1c
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5555:5555"
+    volumes:
+      - type: bind
+        source: ${KAKAO_ANDROID_DATA:-/opt/redroid/data}
+        target: /data
+        bind:
+          create_host_path: false
+      # binderfs inode 자체를 bind. 복제한 문자 장치 노드는 사용하지 않는다.
+      - type: bind
+        source: /dev/binderfs/binder
+        target: /dev/binder
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /dev/binderfs/hwbinder
+        target: /dev/hwbinder
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /dev/binderfs/vndbinder
+        target: /dev/vndbinder
+        bind:
+          create_host_path: false
+    command:
+      - androidboot.redroid_width=1600
+      - androidboot.redroid_height=2560
+      - androidboot.redroid_dpi=340
+      - androidboot.redroid_gpu_mode=guest
+      - androidboot.use_memfd=1
+      - ro.product.manufacturer=samsung
+      - ro.product.brand=samsung
+      - ro.product.model=SM-X710
+      - ro.product.name=gts9wifixx
+      - ro.product.device=gts9wifi
+      - ro.build.characteristics=tablet
+      # 인증키 배포와 Android adbd 지원 확인 후 별도 승인으로 1을 선택한다.
+      - ro.adb.secure=${KAKAO_ADB_SECURE:-0}
+    healthcheck:
+      test: ["CMD", "/system/bin/sh", "-c", "test $$(getprop sys.boot_completed) = 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+  boot:
+    image: kakao-cli:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: "no"
+    entrypoint: ["/bin/bash", "/app/scripts/compose-boot.sh"]
+    environment:
+      KAKAO_ADB_TARGET: redroid:5555
+    volumes:
+      - adb-state:/root/.android
+    depends_on:
+      redroid:
+        condition: service_healthy
+  webui:
+    image: kakao-cli:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command:
+      - webui
+      - --connect
+      - redroid:5555
+      - --serial
+      - redroid:5555
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8800"
+      - --allow-screen
+      - --fs-root
+      - /files
+    ports:
+      # 컨테이너 내부는 0.0.0.0, 호스트 공개는 기본 loopback만.
+      - "${KAKAO_WEB_BIND:-127.0.0.1}:8800:8800"
+    volumes:
+      - adb-state:/root/.android
+      - console-files:/files
+      - scrcpy-cache:/root/.cache/kakao-cli
+    depends_on:
+      boot:
+        condition: service_completed_successfully
+volumes:
+  adb-state:
+  console-files:
+  scrcpy-cache:

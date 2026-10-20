@@ -1,7 +1,7 @@
 [project]
 name = "kakao-cli"
 version = "0.1.0"
-description = "Linux CLI that drives the official KakaoTalk Android app (redroid/Waydroid) over adb"
+description = "Read-only DB reception and UI automation for the official KakaoTalk Android app"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -22,4 +22,7 @@ build-backend = "hatchling.build"
 packages = ["src/kakao_cli"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/kakao_cli", "scripts", "docs", "completions", "README.md"]
+include = ["src/kakao_cli", "scripts", "docs", "completions", "README.md", "deploy", "NOTICE", "Dockerfile", ".dockerignore"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"NOTICE" = "kakao_cli/NOTICE"

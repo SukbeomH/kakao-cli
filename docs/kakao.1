@@ -44,7 +44,8 @@ Check adb connectivity, the installed app version and current screen.
 List chat rooms with last message, time, member and unread counts.
 .TP
 .BI "read " "[room|me]"
-Read recent messages from a room (or the currently open room).
+기본 DB 경로로 최근 메시지를 읽는다. 방 이름, me 또는 room:<id>를 지정한다.
+--source ui는 기존 현재 화면 경로를 사용한다.
 .B \-\-limit N
 caps the count (default 20).
 .TP
@@ -63,8 +64,8 @@ Send an image, video or document (pdf/zip/doc/...). Images and videos go through
 the share recipient picker; documents go through the in\-app File picker.
 .TP
 .BI "poll " "room|me"
-Open ONE room and stream its newly\-arrived messages as NDJSON (recommended
-receive). Text and media (\fB[Photo]\fR/\fB[Video]\fR) are emitted.
+DB의 MAX(_id) 이후 메시지를 NDJSON으로 읽는다(기본 --source db).
+--source ui는 방을 열어 화면의 새 메시지를 읽는다.
 .B \-\-interval SEC
 and
 .B \-\-limit N
@@ -151,7 +152,7 @@ http, and fall back to screencap PNG.
 .BR \-\-video-bit-rate ,
 .B \-\-video-max-size
 tune the stream. While the virtual display is up, a lock file on the device makes
-UI commands
+UI-source commands and sends
 .RB ( rooms ", " read ", " send ", " poll ", " tui " ...)"
 fail with
 .I console_busy
@@ -212,3 +213,12 @@ is_mine, 종류, 안읽은 인원, _id를 추가한다. poll은 MAX(_id) 이후 
 콘솔 잠금 중 DB 수신/TUI 수신은 허용하지만 UI 폴백과 송신은 console_busy(7)다.
 이름을 얻지 못한 방은 rooms의 target(room:<id>)을 사용한다.
 자세한 읽음수 정의와 종류 표는 docs/db-receive.md를 참고한다.
+
+.SH COMPOSE / APPLE SILICON
+Linux 구성은 deploy/compose.yaml, Mac은 deploy/lima.yaml과
+compose.lima.yaml이다. ADB/웹 기본 공개는 loopback이며 binderfs 장치를 개별 bind한다.
+Android /data는 기존 /opt/redroid/data 경로를 그대로 사용한다.
+실제 전환/로그인은 별도 승인 후 docs/deploy-compose.md를 따른다.
+이번 검증에서는 컨테이너를 생성/재시작하지 않았다. down -v는 금지한다.
+검증만 하려면 COMPOSE_DISABLE_ENV_FILE=1 docker compose -f deploy/compose.yaml config --quiet.
+Mac 래퍼 scripts/lima-compose.sh의 인자 없는 기본 동작도 config --quiet다.
