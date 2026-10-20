@@ -16,6 +16,7 @@
 - [요구 사항](#요구-사항)
 - [환경 구축](#환경-구축)
 - [설치 / 실행](#설치--실행)
+- [사용 환경별 가이드](#사용-환경별-가이드)
 - [명령](#명령)
 - [수신 모델](#수신-모델)
 - [한계](#한계)
@@ -108,6 +109,79 @@ docker build -t kakao-cli .
 docker run --rm kakao-cli doctor --connect 10.0.0.30:5555
 ```
 
+## 사용 환경별 가이드
+
+기준: 운영 VM `192.168.0.30`(compose). adb는 VM 안 `127.0.0.1:5555`에만 열려 있으므로
+**VM 밖에서 adb를 쓰려면 SSH 터널**이 필요하다. 웹 콘솔은 LAN `:8800`에 열려 있다(무인증).
+
+| 어디서 | 웹 콘솔 | CLI/TUI | 검증 |
+|---|---|---|---|
+| ① LAN의 PC/폰 브라우저 | `http://192.168.0.30:8800` | — | 실측 |
+| ② 아무 PC + SSH 터널 | `http://localhost:8800` (WebCodecs·클립보드 자동) | `--connect 127.0.0.1:5555` | 실측 |
+| ③ VM 셸 | — | `--serial 127.0.0.1:5555` | 실측 |
+| ④ VM의 webui 컨테이너 | — | `--serial redroid:5555` | 실측 |
+| ⑤ 외부망(휴대폰 등) | ② 또는 VPN | ② | 미구성 |
+| ⑥ 새 Linux 호스트 | compose 신규 설치 | 동일 | 정적 검증 |
+| ⑦ Apple Silicon Mac | Lima VM + compose | 동일 | 정적 검증(실기동 보류) |
+| ⑧ Windows | ② (브라우저) | ②(Python+adb 또는 Docker) | 미검증 |
+
+### ① LAN 브라우저 (가장 간단)
+
+`http://192.168.0.30:8800` — 화면·키보드·파일·클립보드. 평문 http라 영상은 MSE, 기기 클립보드는
+토스트의 **[복사]** 버튼이나 Ctrl/Cmd+V로 옮긴다. **같은 LAN의 누구나 카카오 계정을 조작할 수 있으니**
+신뢰하는 네트워크에서만 쓴다. 채팅 목록·읽기·전송은 웹이 아니라 CLI/TUI로 한다.
+
+### ② 다른 PC에서 SSH 터널 (권장)
+
+```bash
+ssh -N -L 8800:192.168.0.30:8800 -L 5555:127.0.0.1:5555 agent@192.168.0.30
+# 브라우저: http://localhost:8800  → localhost는 보안 컨텍스트라 WebCodecs(저지연)·클립보드 자동 복사 가능
+# CLI/TUI (로컬에 Python 3.11+ · adb 필요):
+kakao doctor --connect 127.0.0.1:5555
+kakao tui    --connect 127.0.0.1:5555
+```
+
+- 웹 콘솔은 VM의 LAN 주소(`192.168.0.30:8800`)에 바인드돼 있어 터널 대상도 그 주소다.
+- 로컬 5555가 이미 쓰이면 `-L 15555:127.0.0.1:5555` 후 `--connect 127.0.0.1:15555`.
+- CLI를 로컬에 설치하기 싫으면 SSH로 컨테이너 CLI를 바로 쓴다:
+  `ssh -t agent@192.168.0.30 docker exec -it kakao-webui-1 python -m kakao_cli tui --serial redroid:5555`
+
+### ③ VM 셸 / ④ 컨테이너 안
+
+```bash
+ssh agent@192.168.0.30
+cd ~/kakao-cli && PYTHONPATH=src python3 -m kakao_cli rooms --serial 127.0.0.1:5555   # ③
+docker exec -it kakao-webui-1 python -m kakao_cli rooms --serial redroid:5555         # ④
+```
+
+VM 재부팅 직후 ③에서 기기가 안 보이면 `adb connect 127.0.0.1:5555`를 한 번 실행한다.
+④는 SQLCipher 캐시가 준비돼 있어 방 이름 조회까지 된다(③도 동일).
+
+### ⑤ 외부망
+
+웹 콘솔은 **인터넷에 직접 열지 않는다**. ②의 SSH 터널을 VPN(예: Tailscale, WireGuard) 위에서 쓰거나,
+Tailscale `serve`로 https를 붙이고 `--allow-host <이름>`을 준다. 현재 VM에는 VPN이 설정돼 있지 않다.
+휴대폰은 SSH 터널 앱(Termius 등)으로 `8800`을 포워딩해 `http://localhost:8800`을 연다.
+
+### ⑥ 새 Linux 호스트
+
+binder 커널 모듈이 있는 x86_64 Linux + Docker. [docs/deploy-compose.md](docs/deploy-compose.md)의
+"Linux 신규 호스트" 절차로 binder 서비스 → compose 기동 → 공식 APK·ADBKeyBoard 설치 → 웹 콘솔에서 QR 로그인.
+태블릿 로그인은 계정당 1대라 **새 호스트에서 로그인하면 기존 VM 세션이 끊긴다**.
+
+### ⑦ Apple Silicon Mac
+
+Docker Desktop·OrbStack은 binder가 없어 안 된다. [deploy/lima.yaml](deploy/lima.yaml)로 arm64 Linux VM을
+만들고 [ARM 오버레이](deploy/compose.lima.yaml)(redroid 14 64only)로 띄운다(`scripts/lima-compose.sh`).
+파일·정적 검증만 마쳤고 실기동·로그인은 보류 상태다(⑥과 같은 1대 제한).
+
+### ⑧ Windows
+
+Android 호스트로는 지원하지 않는다(WSL2 기본 커널에 binder 없음). **제어 호스트**로만 ②를 쓴다:
+Windows 기본 OpenSSH로 터널 → 브라우저 `http://localhost:8800`, CLI는 Python 3.11+ ·
+Android platform-tools(adb)로 `pip install -e .` 후 `kakao ... --connect 127.0.0.1:5555`,
+또는 Docker Desktop에서 이 저장소 이미지로 실행한다. Windows에서의 CLI 동작은 아직 검증하지 않았다.
+
 ## 명령
 
 | 명령 | 설명 |
@@ -150,7 +224,8 @@ kakao tui --connect 10.0.0.30:5555
 
 ```bash
 kakao webui --connect 10.0.0.30:5555           # http://127.0.0.1:8800
-ssh -L 8800:127.0.0.1:8800 agent@192.168.0.30  # 원격 VM이면 SSH 터널 → 로컬 브라우저로 localhost:8800
+ssh -L 8800:127.0.0.1:8800 <vm>  # 원격 호스트에서 기본(127.0.0.1)으로 띄웠다면 SSH 터널 → localhost:8800
+# 운영 VM(LAN 바인드)은 아래 "사용 환경별 가이드 ②" 참고
 ```
 
 운영 VM에서는 compose의 **`webui` 컨테이너**가 상시 띄운다(무인증 — **신뢰하는 LAN 전용**,
