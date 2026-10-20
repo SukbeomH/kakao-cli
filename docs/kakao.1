@@ -131,6 +131,33 @@ images/files to
 .IR /sdcard/Download .
 Clipboard text is kept in memory only. The device jar, adb forward and server
 process are removed when the web UI stops (SIGTERM/SIGHUP included).
+The screen is H.264 video from scrcpy: by default on a scrcpy
+.I virtual display
+sized to the browser's screen area (CSS px \[mu] devicePixelRatio, dpi
+160\[mu]dpr, or
+.BR \-\-vd-dpi " device|N" )
+with KakaoTalk started on it, following window resizes (flex); the device's own
+.I wm size
+and
+.I wm density
+are never changed. When the last viewer leaves (after 5 s) the virtual display
+is destroyed and the app returns to the default display.
+.B \-\-video-mode mirror
+(or the status\-bar toggle) mirrors the default display instead; a virtual
+display that does not come up falls back to mirror. Browsers decode with
+WebCodecs on https/localhost, MSE (fragmented MP4 muxed by the server) on plain
+http, and fall back to screencap PNG.
+.BR \-\-video-max-fps ,
+.BR \-\-video-bit-rate ,
+.B \-\-video-max-size
+tune the stream. While the virtual display is up, a lock file on the device makes
+UI commands
+.RB ( rooms ", " read ", " send ", " poll ", " tui " ...)"
+fail with
+.I console_busy
+(exit 7), because
+.I input
+taps would land on the wrong display.
 .TP
 .B track
 Poll the whole chat list and emit each room's newest message when it changes.
@@ -150,7 +177,10 @@ misses muted or focused rooms.
 .I app_not_installed ,
 6
 .I send_uncertain
-(readback could not confirm a send \[em] never auto\-retried).
+(readback could not confirm a send \[em] never auto\-retried),
+7
+.I console_busy
+(the web console has KakaoTalk on its virtual display).
 .SH EXAMPLES
 .nf
 kakao doctor --connect 10.0.0.30:5555

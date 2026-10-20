@@ -30,7 +30,7 @@ _kakao() {
         pull-media)  opts+=" --new-only" ;;
         track)       opts+=" --interval --window" ;;
         poll)        opts+=" --interval --limit" ;;
-        webui)       opts+=" --host --port --allow-screen --fs-root" ;;
+        webui)       opts+=" --host --port --allow-screen --fs-root --max-upload --allow-host --scrcpy-server --no-scrcpy --video-mode --video-max-fps --video-bit-rate --video-max-size --vd-dpi" ;;
     esac
 
     # file-arg completion

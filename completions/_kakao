@@ -14,7 +14,7 @@ _kakao() {
     'track:poll chat list for changes'
     'poll:stream one room (recommended receive)'
     'tui:interactive terminal UI'
-    'webui:same UI in a browser'
+    'webui:device console in a browser'
   )
   local common=(
     '--json[machine-readable JSON output]'
@@ -35,7 +35,7 @@ _kakao() {
         pull-media) _arguments $common '--new-only[incremental]' '1:dest:_files -/' ;;
         track)      _arguments $common '--interval[poll seconds]:sec' '--window[recent window]:N' ;;
         poll)       _arguments $common '--interval[poll seconds]:sec' '--limit[scan N]:N' '1:room:' ;;
-        webui)      _arguments $common '--host[bind address]:host' '--port[tcp port]:port' '--allow-screen[enable screen/console on non-local bind]' '--fs-root[console local root]:path:_files -/' ;;
+        webui)      _arguments $common '--host[bind address]:host' '--port[tcp port]:port' '--allow-screen[enable screen/console on non-local bind]' '--fs-root[console local root]:path:_files -/' '--max-upload[upload size limit]:size' '--allow-host[extra allowed Host name]:name' '--scrcpy-server[pinned scrcpy-server jar]:jar:_files' '--no-scrcpy[no clipboard/video]' '--video-mode[virtual display or mirror]:mode:(virtual mirror)' '--video-max-fps[fps cap]:fps' '--video-bit-rate[H.264 bit rate]:rate' '--video-max-size[mirror long side]:px' '--vd-dpi[virtual display dpi]:dpi:(auto device)' ;;
         *)          _arguments $common ;;
       esac ;;
   esac

@@ -155,10 +155,25 @@ ssh -L 8800:127.0.0.1:8800 agent@192.168.0.30  # 원격 VM이면 SSH 터널 → 
   `~/.cache/kakao-cli/`로 받아 **sha256 고정 검증**(불일치면 거부). 오프라인은 `--scrcpy-server PATH`
   (역시 검증), 끄려면 `--no-scrcpy`. 기기 `/data/local/tmp`의 jar·adb forward·서버 프로세스는 webui
   종료 시(SIGTERM/SIGHUP 포함) 정리된다.
-- **화면 전달**: 기본은 `screencap` PNG를 **보는 사람이 있을 때만** 캡처(메모리 1프레임, 디스크 미저장),
-  바뀐 프레임만 전송. 실측 ~1–3fps, 1600×2560 PNG ~0.4–0.6MB. 상태바 오른쪽에 방식 표시.
-- **모바일**: 좁은 화면(≤720px)에서는 화면이 위, 파일 패널이 아래로 쌓인다. `100dvh`·safe-area·
-  `visualViewport`, 입력 16px(iOS 확대 방지).
+- **화면 = H.264 영상(scrcpy) + 가상 디스플레이**: 보는 사람이 있으면 scrcpy가 **브라우저 화면 영역
+  크기의 가상 디스플레이**(CSS px × devicePixelRatio, dpi = 160 × dpr → 1dp ≈ 1 CSS px)를 만들고
+  카카오톡을 그 위에서 띄운다. 데스크톱 창은 태블릿 2단 레이아웃, 폰은 폰 레이아웃으로 보이고, 창
+  크기가 바뀌면 ~300ms 뒤 디스플레이도 따라 바뀐다(flex). **실제 기기 `wm size`/`wm density`는 절대
+  건드리지 않는다.** 마지막 시청자가 떠나면 5초 뒤 가상 디스플레이를 없애고 앱은 기본 화면으로 돌아온다.
+  상태바 `가상/미러` 선택: **미러**는 기본 디스플레이를 그대로(최대 `--video-max-size`, redroid 기본
+  화면은 15Hz). 가상 디스플레이가 8초 안에 안 뜨면 자동으로 미러(상태바에 사유).
+- **렌더러(자동 선택, 상태바 `자동/WC/MSE/PNG`·`?video=`)**: https/localhost(보안 컨텍스트)면
+  **WebCodecs**(canvas), 평문 http면 **MSE**(서버가 자체 fMP4로 감싸 전송), 둘 다 안 되거나 스트림이
+  실패하면 기존 **screencap PNG**(보는 동안만 캡처, ~2fps)로 자동 폴백. 입력은 보고 있는 화면으로 간다:
+  영상이면 scrcpy 터치/키(가상 디스플레이 좌표), PNG면 adb(기본 디스플레이). 실측(redroid, 1400×860
+  창): 활동 중 ~12–15fps·1.1–2.3Mbps, 정지 화면 0–5fps·수십 kbps, 탭→화면 변화 WebCodecs ~0.1–0.16s /
+  MSE ~0.15–0.4s, 서버 CPU 2–3%, 기기는 SW 인코더(media.codec) ~17–27%.
+- **CLI/TUI와 동시 사용**: 가상 디스플레이에 앱이 있는 동안 `input tap`은 기본 디스플레이로 가므로 CLI
+  자동화가 엉뚱한 화면을 누르게 된다. 그래서 콘솔이 **기기에 잠금 파일**(5초 하트비트, 기기 시계 기준
+  20초 지나면 무효)을 두고, 그동안 `rooms/read/send/poll/tui …`는 `console_busy`(종료 코드 7)로 거절한다.
+  콘솔 탭을 닫거나 **미러**로 바꾸면 풀린다(`kakao doctor`에 표시).
+- **모바일**: 좁은 화면(≤720px)에서는 기기 화면이 뷰포트 높이를 거의 채우고(세로 가상 디스플레이) 파일
+  패널은 그 아래(스크롤). `100dvh`·safe-area·`visualViewport`, 입력 16px(iOS 확대 방지).
 - **보안(중요)**: 콘솔은 **계정 전체 원격 조작**과 같다. 기본 바인드 `127.0.0.1`. `--host`가 로컬이 아니면
   콘솔 API가 **기본으로 꺼지고** `--allow-screen`을 명시해야 켜진다(기동 경고). 모든 콘솔 API는 Host
   허용목록(IP 주소·`localhost`·`--allow-host NAME`, DNS rebinding 차단), 조작 POST는 JSON + same-origin,
@@ -177,7 +192,8 @@ ssh -L 8800:127.0.0.1:8800 agent@192.168.0.30  # 원격 VM이면 SSH 터널 → 
 
 - UI 자동화라 **앱 업데이트로 레이아웃/resource-id가 바뀌면 깨질 수 있다**(셀렉터는 라이브
   `uiautomator dump`가 기준).
-- 한 기기에 **두 제어 세션을 동시에** 돌리면 UI 경합이 난다(poll 중 send 등). 순차 사용 권장.
+- 한 기기에 **두 제어 세션을 동시에** 돌리면 UI 경합이 난다(poll 중 send 등). 순차 사용 권장. 웹 콘솔이
+  가상 디스플레이로 앱을 쓰는 동안 CLI/TUI는 `console_busy`로 거절된다(위 웹 콘솔 참고).
 - Play Integrity/anti-emulator로 로그인·동작이 막힐 가능성(현재 빌드에선 동작 확인).
 - 과도한 자동화는 계정 제한으로 이어질 수 있다.
 
@@ -192,6 +208,11 @@ src/kakao_cli/
   notify.py     알림 기반 수신 파서(watch)
   media.py      미디어 블롭 pull + 매직바이트 타입
   errors.py     구조화 오류 코드 / 종료 코드
+  webui.py      웹 콘솔(stdlib HTTP): 화면·입력·파일·클립보드·영상 API + 페이지
+  scrcpy.py     scrcpy-server 고정/검증·프로토콜·세션(제어+영상 소켓)
+  video.py      영상 허브(시청자 팬아웃·가상 디스플레이 크기/flex·미러 폴백)
+  fmp4.py       MSE용 최소 fMP4 muxer
+  consolelock.py 기기측 콘솔 잠금(CLI/TUI 거절)
   ioutil.py     JSON/텍스트 출력
 scripts/        run-redroid.sh, kakao-boot.sh, kakao-redroid.service, provision-waydroid.sh
 docs/           setup-waydroid.md, kakao.1(man), initiatives/*(설계·분석·원장)
