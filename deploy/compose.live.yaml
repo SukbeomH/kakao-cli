@@ -1,0 +1,24 @@
+# VM 108 live overlay: keep the pre-compose runtime identical (no memfd, no binderfs node binds;
+# the privileged redroid allocates binder itself as before) and expose the console on the LAN.
+services:
+  redroid:
+    command:
+      - androidboot.redroid_width=1600
+      - androidboot.redroid_height=2560
+      - androidboot.redroid_dpi=340
+      - androidboot.redroid_gpu_mode=guest
+      - ro.product.manufacturer=samsung
+      - ro.product.brand=samsung
+      - ro.product.model=SM-X710
+      - ro.product.name=gts9wifixx
+      - ro.product.device=gts9wifi
+      - ro.build.characteristics=tablet
+    volumes: !override
+      - type: bind
+        source: /opt/redroid/data
+        target: /data
+        bind:
+          create_host_path: false
+  webui:
+    ports: !override
+      - "192.168.0.30:8800:8800"

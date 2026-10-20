@@ -15,6 +15,18 @@ if [[ "$ready" != true ]]; then
   echo 'Android 부팅 또는 ADB 인증 실패' >&2
   exit 1
 fi
+# DB 수신(kakaodb)은 /data/data 읽기에 root adbd가 필요하다. service.adb.root는 재부팅 시
+# 초기화되므로 부팅마다 다시 켠다(redroid userdebug). 실패하면 DB 수신만 UI로 폴백된다.
+if [[ "$(adb -s "$SER" shell id -u 2>/dev/null | tr -d '\r')" != 0 ]]; then
+  adb -s "$SER" root >/dev/null 2>&1 || true
+  for ((attempt=0; attempt<20; attempt++)); do
+    sleep 2
+    adb connect "$SER" >/dev/null 2>&1 || true
+    [[ "$(adb -s "$SER" shell id -u 2>/dev/null | tr -d '\r')" == 0 ]] && break
+  done
+fi
+[[ "$(adb -s "$SER" shell id -u 2>/dev/null | tr -d '\r')" == 0 ]] \
+  || echo '경고: adbd root 전환 실패 — DB 수신은 UI 경로로 폴백됩니다' >&2
 if ! adb -s "$SER" shell pm path com.kakao.talk | tr -d '\r' | grep -q '^package:'; then
   echo '공식 카카오톡 APK를 먼저 설치하세요' >&2
   exit 1

@@ -357,3 +357,11 @@ B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환:
 - 사용자 결정은 질문 없이 기본값으로 보류: ①실제 Linux 전환 ②Mac VM/로그인
   ③ADB 인증강제(off) ④LAN 공개(loopback). SQLCipher 프로필/미확정 type은 후속.
   [최종 검증·결정 기록](../verification/2026-10-20-db-compose.md).
+
+### 운영 반영 — DB 수신·compose 머지 및 VM 108 compose 전환 (2026-10-20, Hermes)
+- `codex-db`(c128ea8 DB 수신, 49bef99 compose/Lima) 푸시 → master fast-forward. 테스트 104 통과(재실행 확인), 커밋 내 실제 대화 본문·이름 없음(테스트 한글은 전부 가짜 값) 점검.
+- VM 108 전환: systemd `kakao-redroid.service` → compose(`deploy/compose.yaml` + VM 오버레이 `deploy/compose.live.yaml`). 상세·롤백은 `docs/deploy-compose.md` "VM 108 전환 완료".
+  - adb 노출 해소: `0.0.0.0:5555` → `127.0.0.1:5555`. 웹 콘솔은 compose 컨테이너로 `192.168.0.30:8800`(fs-root 는 명명 볼륨 `/files`, 이전 VM 홈 아님).
+  - 로그인 유지 확인(MainActivity, chat_logs 1134→1135+), `rooms --source db` 55개.
+  - 발견·수정: 새 컨테이너 adbd 가 shell 권한 → DB 읽기 실패. `compose-boot.sh` 에 부팅마다 `adb root` 추가.
+- 보류(사용자): ADB 키 인증(`ro.adb.secure`), 맥 Lima 실기동·로그인. 진행: SQLCipher 프로필 이름 + 메시지 type 매핑(Codex).

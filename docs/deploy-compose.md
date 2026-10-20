@@ -100,7 +100,23 @@ ARM VM은 x86 VM의 /data를 가져오지 않고 새 데이터로 로그인한�
 카카오 태블릿 슬롯이 하나라고 가정하므로 **Mac 로그인 시 기존 VM 세션 해제 가능성**을
 사용자가 판단해야 한다. Mac 실제 부팅·로그인은 이번 검증 범위 밖이다.
 
-## 현행 systemd에서 전환/롤백 (아직 실행하지 않음)
+## VM 108 전환 완료 (2026-10-20, Hermes)
+
+- 실행: `~/kakao-compose`(git archive 사본)에서
+  `COMPOSE_DISABLE_ENV_FILE=1 docker compose -f deploy/compose.yaml -f deploy/compose.live.yaml up -d`.
+- `deploy/compose.live.yaml`(VM 전용 오버레이): 전환 전과 **런타임을 동일하게** 유지 — redroid 인자는
+  기존 10개 그대로(`use_memfd` 미추가), binderfs 노드 개별 bind 없음(기존처럼 privileged redroid가
+  자체 할당), `/data`=`/opt/redroid/data`. 웹 콘솔만 `192.168.0.30:8800`(LAN, 무인증)으로 공개.
+- 호스트: `scripts/install-binder.sh` 설치·`kakao-binder.service` enable/start(부팅 시 binder 준비, docker 앞).
+  `kakao-redroid.service`는 `disable --now`. 기존 컨테이너 `redroid`는 **삭제하지 않고 정지 보관**(롤백용).
+- 결과: adb `127.0.0.1:5555`만(LAN에서 5555 접속 불가 확인 — 이전 0.0.0.0 노출 해소), 웹 `192.168.0.30:8800` 200,
+  로그인 유지(MainActivity, chat_logs 행 증가 지속), 웹 콘솔 H.264 MSE 가상 928×744 ~16fps.
+- 발견: 전환 전 adbd 가 root 였던 것은 과거 수동 `adb root` 덕분(재부팅 시 초기화) — 새 컨테이너에선 shell 이라
+  DB 수신이 열리지 않았다. `compose-boot.sh` 가 부팅마다 `adb root` 를 켜도록 수정.
+- 호스트 CLI(VM 셸)는 부팅 후 `adb connect 127.0.0.1:5555`(또는 `--connect`)가 필요하다(예전엔 kakao-boot.sh 가 연결).
+- 롤백: 아래 5번 절차 그대로(`compose stop` → `systemctl enable --now kakao-redroid.service` → 기존 kwebui 명령).
+
+## 현행 systemd에서 전환/롤백 (원 절차)
 
 현행 `kakao-redroid.service`는 `kakao-boot.sh`로 기존 `redroid`를 시작한다.
 compose와 동시에 기동하면 같은 데이터/포트를 쓸 수 있으므로 소유자를 하나로 정한다.
