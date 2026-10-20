@@ -16,27 +16,39 @@ def _dev(args):
     return adb.connect(args.serial, args.addr, adb=args.adb)
 
 
+def _ui_dev(args):
+    """Device for commands that drive the app UI: refuse while the web console
+    has KakaoTalk on its virtual display (taps would hit the wrong display)."""
+    from . import consolelock
+    dev = _dev(args)
+    consolelock.check(dev)
+    return dev
+
+
 def cmd_doctor(args) -> dict:
+    from . import consolelock
     dev = _dev(args)
     version = adb.require_app(dev)
+    busy, info = consolelock.parse(dev.shell("cat %s 2>/dev/null; echo ==; date +%%s" % consolelock.LOCK))
     return {"ok": True, "serial": dev.serial, "package": PACKAGE,
-            "app_version": version, "current_activity": dev.current_activity()}
+            "app_version": version, "current_activity": dev.current_activity(),
+            "web_console_virtual_display": info if busy else None}
 
 
 def cmd_rooms(args) -> dict:
-    d = Driver(_dev(args))
+    d = Driver(_ui_dev(args))
     rooms = d.list_rooms()
     return {"ok": True, "count": len(rooms), "rooms": rooms}
 
 
 def cmd_read(args) -> dict:
-    d = Driver(_dev(args))
+    d = Driver(_ui_dev(args))
     msgs = d.read_room(args.room, limit=args.limit)
     return {"ok": True, "room": args.room, "count": len(msgs), "messages": msgs}
 
 
 def cmd_send(args) -> dict:
-    d = Driver(_dev(args))
+    d = Driver(_ui_dev(args))
     if not args.yes:
         raise KakaoError("refusing to send without --yes (proposal/approval)",
                          room=args.room, text=args.text)
@@ -48,7 +60,7 @@ def cmd_send(args) -> dict:
 
 
 def cmd_memo(args) -> dict:
-    d = Driver(_dev(args))
+    d = Driver(_ui_dev(args))
     d.open_self_chat()
     result = d.send_in_room(args.text)
     if getattr(args, "home", False):
@@ -69,7 +81,7 @@ def cmd_watch(args) -> int:
 
 
 def cmd_send_file(args) -> dict:
-    d = Driver(_dev(args))
+    d = Driver(_ui_dev(args))
     if not args.yes:
         raise KakaoError("refusing to send without --yes", target=args.target, file=args.file)
     result = d.send_file(args.target, args.file)
@@ -103,7 +115,7 @@ def cmd_pull_media(args) -> dict:
 
 def cmd_track(args) -> int:
     import json, sys
-    d = Driver(_dev(args))
+    d = Driver(_ui_dev(args))
     for ev in d.track(interval=args.interval, window=args.window):
         json.dump(ev, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n"); sys.stdout.flush()
@@ -113,7 +125,7 @@ def cmd_track(args) -> int:
 
 def cmd_poll(args) -> int:
     import json, sys
-    d = Driver(_dev(args))
+    d = Driver(_ui_dev(args))
     for ev in d.poll_room(args.room, interval=args.interval, limit=args.limit):
         json.dump(ev, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n"); sys.stdout.flush()
@@ -123,6 +135,7 @@ def cmd_poll(args) -> int:
 
 def cmd_tui(args) -> int:
     from . import tui
+    _ui_dev(args)                       # refuse while the web console holds the app
     tui.run(serial=args.serial, addr=args.addr, adb=args.adb)
     return 0
 
@@ -133,7 +146,9 @@ def cmd_webui(args) -> int:
               host=args.host, port=args.port, allow_screen=args.allow_screen,
               fs_root=args.fs_root, max_upload=args.max_upload,
               allow_hosts=args.allow_host or (), scrcpy_server=args.scrcpy_server,
-              use_scrcpy=not args.no_scrcpy)
+              use_scrcpy=not args.no_scrcpy, video_mode=args.video_mode,
+              video_max_fps=args.video_max_fps, video_bit_rate=args.video_bit_rate,
+              video_max_size=args.video_max_size, vd_dpi=args.vd_dpi)
     return 0
 
 
@@ -260,6 +275,18 @@ def build_parser():
                                  "download once into ~/.cache/kakao-cli/")
             sp.add_argument("--no-scrcpy", action="store_true",
                             help="don't start scrcpy-server (no clipboard/video; screencap + adb input)")
+            sp.add_argument("--video-mode", choices=("virtual", "mirror"), default="virtual",
+                            help="console video: a scrcpy virtual display sized to the browser "
+                                 "(flex, default) or a mirror of the device screen")
+            sp.add_argument("--video-max-fps", type=int, default=60, metavar="N",
+                            help="H.264 frame-rate cap (default 60; redroid's own screen is 15 Hz)")
+            sp.add_argument("--video-bit-rate", type=_size, default="4M", metavar="BPS",
+                            help="H.264 bit rate (default 4M)")
+            sp.add_argument("--video-max-size", type=int, default=1280, metavar="PX",
+                            help="mirror mode: longest side (default 1280)")
+            sp.add_argument("--vd-dpi", default="auto", metavar="auto|device|N",
+                            help="virtual display dpi: auto = 160×devicePixelRatio (1 dp ≈ 1 CSS px), "
+                                 "device = proportional to the device's 340 dpi, or a number")
             sp.add_argument("--fs-root", default="~", metavar="PATH",
                             help="local file-manager root in the console (default: ~); "
                                  "the pane cannot leave it")

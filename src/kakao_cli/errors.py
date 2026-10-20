@@ -34,3 +34,10 @@ class SendUncertain(KakaoError):
     """Transcript readback could not confirm the message was delivered. Never auto-retry."""
     code = "send_uncertain"
     exit_code = 6
+
+
+class ConsoleBusy(KakaoError):
+    """The web console has KakaoTalk on a scrcpy virtual display; UI automation
+    (uiautomator/input on display 0) would act on the wrong screen."""
+    code = "console_busy"
+    exit_code = 7

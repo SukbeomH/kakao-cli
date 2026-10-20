@@ -266,6 +266,7 @@ class ScrcpySession:
         self.video = False
         self.video_opts = {}
         self.on_video = None                  # callback(event) for the video hub
+        self.on_connect = None                # callback() after each successful (re)connect
         self._restart = threading.Event()
         self._sup = None
 
@@ -300,6 +301,11 @@ class ScrcpySession:
                 self._connect()
                 backoff = 1.0
                 self.error = None
+                if self.on_connect:
+                    try:
+                        self.on_connect()
+                    except Exception as e:   # noqa — report, keep the session
+                        self.error = "on_connect: %s" % e
                 self.on_change()
                 # wait until the session dies, a restart is requested, or stop
                 while not self._stop.is_set() and not self._restart.is_set():
@@ -451,6 +457,23 @@ class ScrcpySession:
         ok = ev.wait(timeout)
         self._ack.pop(seq, None)
         return ok
+
+    def tap(self, x: int, y: int, w: int, h: int):
+        self.send(enc_touch(ACTION_DOWN, x, y, w, h) + enc_touch(ACTION_UP, x, y, w, h))
+
+    def swipe(self, x1, y1, x2, y2, w, h, ms: int = 250, steps: int = 8):
+        """down → interpolated moves over `ms` → up (runs in its own thread)."""
+        def run():
+            try:
+                self.send(enc_touch(ACTION_DOWN, x1, y1, w, h))
+                for i in range(1, steps + 1):
+                    time.sleep(ms / 1000.0 / steps)
+                    self.send(enc_touch(ACTION_MOVE, x1 + (x2 - x1) * i // steps,
+                                        y1 + (y2 - y1) * i // steps, w, h))
+                self.send(enc_touch(ACTION_UP, x2, y2, w, h))
+            except ScrcpyError:
+                pass
+        threading.Thread(target=run, daemon=True).start()
 
     def key(self, keycode: int):
         self.send(enc_keycode(ACTION_DOWN, keycode) + enc_keycode(ACTION_UP, keycode))

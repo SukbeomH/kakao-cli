@@ -16,6 +16,7 @@ import os
 import queue
 import re
 import shutil
+import struct
 import tempfile
 import threading
 import time
@@ -27,6 +28,9 @@ from .worker import Worker
 from .screen import ScreenBuffer, view_to_device
 from .scrcpy import CLIP_MAX, ScrcpySession, ensure_server, ScrcpyError
 from .scrcpy import VERSION as SCRCPY_VERSION
+from .scrcpy import avc_codec_string
+from .video import VideoHub
+from . import fmp4
 from .fs import (LocalRoot, shq, parse_stat_lines, android_list_cmd,
                  android_parent, unique_name, content_disposition, clean_upload_name,
                  host_allowed)
@@ -58,6 +62,7 @@ class State:
         self.seq = 0
         self.status = "starting …"
         self.bridge = None            # ScrcpySession (clipboard/input/video) or None
+        self.hub = None               # VideoHub or None
 
     def snapshot(self) -> dict:
         b = self.bridge
@@ -248,6 +253,15 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self.wfile.write(frame)
             elif path.startswith("/api/fs/"):
                 self._fs_get(path)
+            elif path == "/api/video/info":
+                if not self._console_get_ok():
+                    return
+                h = state.hub
+                self._json(200, h.info() if h else {"available": False})
+            elif path == "/api/video/stream":
+                if not self._console_get_ok():
+                    return
+                self._video_stream()
             elif path == "/api/clip":
                 if not self._console_get_ok():
                     return
@@ -325,6 +339,8 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._fs_upload()
             elif self.path == "/api/clip":
                 self._clip_post()
+            elif self.path in ("/api/video/resize", "/api/video/mode"):
+                self._video_post()
             else:
                 self._json(404, {"error": "not found"})
 
@@ -429,6 +445,90 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 return self._json(202, {"id": jid, "name": final})
             self._json(201, {"name": final, "path": fsroot.rel(os.path.join(target_dir, final))})
 
+        def _video_stream(self):
+            """Framed binary stream: [type u8][len u32][payload]
+               1 meta JSON {w,h,codec,mode} · 2 init (fmp4) / SPS+PPS (annexb)
+               3 media: fmp4 moof+mdat, or annexb [key u8][pts u64][access unit]."""
+            h = state.hub
+            if h is None:
+                return self._json(503, {"error": "video unavailable (scrcpy not running)"})
+            q = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            fmt = (q.get("fmt") or ["annexb"])[0]
+            if fmt not in ("annexb", "fmp4"):
+                return self._json(400, {"error": "fmt must be annexb or fmp4"})
+            size = None
+            try:
+                size = (float(q["w"][0]), float(q["h"][0]), float((q.get("dpr") or ["1"])[0]))
+            except (KeyError, ValueError, IndexError):
+                pass
+            sub = h.subscribe(fmt, size)
+            mux = fmp4.Muxer() if fmt == "fmp4" else None
+            wh = cfg = None
+            ready = False
+            def put(t, payload):
+                self.wfile.write(struct.pack(">BI", t, len(payload)) + payload)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                while True:
+                    try:
+                        ev = sub.q.get(timeout=10)
+                    except queue.Empty:
+                        continue
+                    if ev[0] == "session":
+                        wh, ready = (ev[1], ev[2]), False
+                        continue
+                    if ev[0] == "config":
+                        cfg, ready = ev[1], False
+                        continue
+                    if ev[0] != "frame" or not wh or not cfg:
+                        continue
+                    _, pts, key, data = ev
+                    if not ready:
+                        if not key:
+                            continue
+                        sps, _pps = fmp4.sps_pps(cfg)
+                        meta = {"w": wh[0], "h": wh[1], "mode": h.mode,
+                                "codec": avc_codec_string(sps) if sps else "avc1.42C029"}
+                        put(1, json.dumps(meta).encode())
+                        if mux:
+                            init = mux.init(cfg, *wh)
+                            if init is None:
+                                continue
+                            put(2, init)
+                        else:
+                            put(2, cfg)
+                        ready = True
+                    if mux:
+                        frag = mux.frame(pts, key, data)
+                        if frag:
+                            put(3, frag)
+                    else:
+                        put(3, struct.pack(">BQ", 1 if key else 0, pts) + data)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                h.unsubscribe(sub)
+
+        def _video_post(self):
+            if not self._guard():
+                return
+            h = state.hub
+            if h is None:
+                return self._json(503, {"error": "video unavailable"})
+            body = self._read_json()
+            try:
+                if self.path == "/api/video/resize":
+                    return self._json(200, h.resize(_num(body.get("w")), _num(body.get("h")),
+                                                     _num(body.get("dpr"), 1) or 1))
+                return self._json(200, h.set_mode(str(body.get("mode"))))
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+
         def _clip_post(self):
             """Browser → device clipboard (paste=true also pastes into the focused
             field). Without scrcpy, paste falls back to typing via ADBKeyBoard."""
@@ -496,29 +596,61 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
             body = self._read_json()
             op = self.path[len("/api/screen/"):]
             _seq, frame, w, h = screen.get()
-            if op in ("tap", "swipe") and (not w or not h):
+            hub, bridge = state.hub, state.bridge
+            # the viewer watches live video → input goes to the streamed display
+            # through scrcpy (video coordinates); a PNG viewer sees display 0 →
+            # adb input there (even while another viewer keeps a virtual display)
+            live = bool(hub and hub.active and bridge and bridge.connected
+                        and bridge.video and hub.wh)
+            vid = hub.wh if (live and body.get("src") != "png") else None
+            # scrcpy injects keys into its display: only use it when that is the
+            # display the viewer sees (video viewer, or no virtual display up)
+            vd_up = live and hub.mode == "virtual"
+            key_via_scrcpy = bool(bridge and bridge.connected and (vid or not vd_up))
+            iw, ih = _num(body.get("iw")), _num(body.get("ih"))
+            if not (iw and ih):
+                iw, ih = (vid or (w, h))
+            if op in ("tap", "swipe") and (not iw or not ih):
                 return self._json(409, {"error": "no frame yet"})
+            def to_target(cx, cy):
+                px, py = view_to_device(_num(cx), _num(cy), _num(body.get("ew")),
+                                        _num(body.get("eh")), iw, ih)
+                nx, ny = px / max(1, iw - 1), py / max(1, ih - 1)
+                tw, th = vid or (w, h)
+                return (int(round(nx * (tw - 1))), int(round(ny * (th - 1))))
             if op == "tap":
-                x, y = view_to_device(_num(body.get("cx")), _num(body.get("cy")),
-                                      _num(body.get("ew")), _num(body.get("eh")), w, h)
-                worker.put("tap", x, y)
-                self._json(200, {"ok": True, "x": x, "y": y})
+                x, y = to_target(body.get("cx"), body.get("cy"))
+                if vid:
+                    bridge.tap(x, y, *vid)
+                else:
+                    worker.put("tap", x, y)
+                self._json(200, {"ok": True, "x": x, "y": y, "via": "scrcpy" if vid else "adb"})
             elif op == "swipe":
-                ew, eh = _num(body.get("ew")), _num(body.get("eh"))
-                x1, y1 = view_to_device(_num(body.get("cx1")), _num(body.get("cy1")), ew, eh, w, h)
-                x2, y2 = view_to_device(_num(body.get("cx2")), _num(body.get("cy2")), ew, eh, w, h)
+                x1, y1 = to_target(body.get("cx1"), body.get("cy1"))
+                x2, y2 = to_target(body.get("cx2"), body.get("cy2"))
                 ms = max(50, min(3000, int(_num(body.get("ms"), 200))))
-                worker.put("swipe", x1, y1, x2, y2, ms)
-                self._json(200, {"ok": True})
+                if vid:
+                    bridge.swipe(x1, y1, x2, y2, *vid, ms=ms)
+                else:
+                    worker.put("swipe", x1, y1, x2, y2, ms)
+                self._json(200, {"ok": True, "via": "scrcpy" if vid else "adb"})
             elif op == "key":
                 name, code = body.get("name"), body.get("code")
-                if name in ("back", "home", "enter"):
-                    worker.put("key", name)
+                named = {"back": 4, "home": 3, "enter": 66}
+                if name in named:
+                    kc = named[name]
                 elif isinstance(code, int) and not isinstance(code, bool) and code in KEYCODES:
-                    worker.put("key", code)       # keyboard passthrough (allow-listed)
+                    kc = code                     # keyboard passthrough (allow-listed)
                 else:
                     return self._json(400, {"error": "bad key"})
-                self._json(200, {"ok": True})
+                if key_via_scrcpy:
+                    try:
+                        bridge.key(kc)
+                        return self._json(200, {"ok": True, "via": "scrcpy"})
+                    except Exception:
+                        pass
+                worker.put("key", name if name in named else kc)
+                self._json(200, {"ok": True, "via": "adb"})
             elif op == "text":
                 text = body.get("text") or ""
                 if not text:
@@ -556,10 +688,11 @@ def _num(v, default=0):
 def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
           screen: ScreenBuffer = None, screen_enabled: bool = True,
           fs_root: str = "~", max_upload: int = DEFAULT_MAX_UPLOAD,
-          allow_hosts=(), disk_free=None, bridge=None) -> ThreadingHTTPServer:
+          allow_hosts=(), disk_free=None, bridge=None, hub=None) -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
     state.bridge = bridge
+    state.hub = hub
     if bridge is not None:
         bridge.on_change = state.bump
     if tmpdir is None:
@@ -581,7 +714,8 @@ def _is_local(host: str) -> bool:
 
 def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_screen=False,
         fs_root="~", max_upload=DEFAULT_MAX_UPLOAD, allow_hosts=(), scrcpy_server=None,
-        use_scrcpy=True):
+        use_scrcpy=True, video_mode="virtual", video_max_fps=60, video_bit_rate=4_000_000,
+        video_max_size=1280, vd_dpi="auto"):
     dev = connect(serial, addr, adb=adb)
     tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     screen = ScreenBuffer()
@@ -592,17 +726,19 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
     worker.start()
     # scrcpy-server bridge (clipboard, fast input, video) — only when the console
     # is on; without it the console still works on screencap + adb input
-    bridge, bridge_note = None, "off"
+    bridge, hub, bridge_note = None, None, "off"
     if screen_enabled and use_scrcpy:
         try:
             bridge = ScrcpySession(dev, ensure_server(scrcpy_server))
+            hub = VideoHub(bridge, dev, mode=video_mode, max_fps=video_max_fps,
+                           bit_rate=video_bit_rate, max_size=video_max_size, dpi_mode=vd_dpi)
             bridge.start()
             bridge_note = "scrcpy-server v%s (Apache-2.0)" % SCRCPY_VERSION
         except (ScrcpyError, OSError) as e:
             bridge_note = "unavailable: %s" % e
     httpd = serve(worker, host, port, tmpdir=tmpdir, screen=screen,
                   screen_enabled=screen_enabled, fs_root=fs_root,
-                  max_upload=max_upload, allow_hosts=allow_hosts, bridge=bridge)
+                  max_upload=max_upload, allow_hosts=allow_hosts, bridge=bridge, hub=hub)
     # SIGTERM (systemd/kill) and SIGHUP (closed terminal, `tmux kill-session`)
     # must still clean up the device: scrcpy process, adb forward, pushed jar
     import signal
@@ -633,13 +769,18 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
     finally:
         if bridge is not None:
             bridge.stop()
+            try:
+                from . import consolelock
+                consolelock.clear(dev)
+            except Exception:
+                pass
         httpd.server_close()
         worker.put("quit")
 
 
 # --- the single page: device console in the TUI tone (monospace, dark, reverse-video bars) ---
 PAGE = r"""<!doctype html>
-<html lang="ko"><head><meta charset="utf-8">
+<html lang="ko"><head><meta charset="utf-8"><link rel="icon" href="data:,">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#16161e">
 <title>kakao-cli 콘솔</title>
@@ -707,8 +848,11 @@ PAGE = r"""<!doctype html>
   .scrwrap{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;
     background:#000;border:1px solid var(--line);border-radius:4px;position:relative}
   .scrwrap.kbon{box-shadow:0 0 0 2px var(--accent) inset}
-  #scr{max-width:100%;max-height:100%;object-fit:contain;touch-action:none;
+  #scr,#vcanvas,#vvideo{max-width:100%;max-height:100%;object-fit:contain;touch-action:none;
     user-select:none;-webkit-user-select:none}
+  #scr[hidden],#vcanvas[hidden],#vvideo[hidden]{display:none}
+  .statusbar select{background:var(--bar);color:var(--accent);border:1px solid var(--line);
+    border-radius:3px;font:inherit;font-size:12px;padding:0 2px}
   #kbcap{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;
     resize:none;font-size:16px}
   .toast{position:fixed;right:12px;bottom:calc(40px + var(--safe-b));max-width:min(460px,92vw);
@@ -769,7 +913,9 @@ PAGE = r"""<!doctype html>
         <span class="fps" id="cfps"></span>
       </div>
       <div class="scrwrap" id="conwrap"><textarea id="kbcap" autocomplete="off" spellcheck="false"
-        aria-label="기기 키보드 입력"></textarea><img id="scr" alt="기기 화면" draggable="false"></div>
+        aria-label="기기 키보드 입력"></textarea><img id="scr" alt="기기 화면" draggable="false"><canvas
+        id="vcanvas" hidden aria-label="기기 화면(H.264)"></canvas><video id="vvideo" hidden muted
+        playsinline autoplay disablepictureinpicture aria-label="기기 화면(H.264)"></video></div>
     </div>
   </div>
   <div class="bar statusbar" id="statusbar">
@@ -777,6 +923,11 @@ PAGE = r"""<!doctype html>
     <label id="clipauto-l" hidden title="기기에서 복사하면 브라우저 클립보드에 자동으로 (https/localhost에서만)">
       <input type="checkbox" id="clipauto"> 자동 복사</label>
     <span class="badge" id="clipbadge" title="기기 클립보드 연동(scrcpy)">📋 —</span>
+    <select id="dsel" title="디스플레이: 가상(브라우저 크기에 맞춤) / 미러(기기 화면)">
+      <option value="virtual">가상</option><option value="mirror">미러</option></select>
+    <select id="rsel" title="화면 전달: 자동 / WebCodecs / MSE / PNG">
+      <option value="auto">자동</option><option value="wc">WC</option><option value="mse">MSE</option>
+      <option value="png">PNG</option></select>
     <span class="badge" id="vmode" title="화면 전달 방식">PNG</span>
   </div>
   <div class="toast" id="cliptoast" hidden role="status">
@@ -890,7 +1041,7 @@ function pollFrame(){
         if(!pngWanted) return;
         $("scr").src = nx.src;
         fpsCount++; const now=Date.now();
-        if(now-fpsT >= 1000){ $("cfps").textContent = fpsCount+" fps"; fpsCount=0; fpsT=now; }
+        if(now-fpsT >= 1000){ $("cfps").textContent = fpsCount+" fps"; fpsCount=0; fpsT=now; badge(); }
       };
       nx.src = "/api/screen/frame?seq=" + j.seq;
     }
@@ -898,26 +1049,35 @@ function pollFrame(){
   }).catch(()=>{ if(pngWanted) setTimeout(pollFrame, 600); else frameLoop=false; });
 }
 async function scrPost(path, body){
+  body.src = renderer==="png" ? "png" : "video";   // input goes to the display being shown
   try{ await fetch("/api/screen/"+path, {method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); }catch(e){}
 }
-const scr = $("scr");
+// pointer → tap/swipe on whichever element currently shows the screen; the
+// server maps element coords (letterbox-aware) through the media's own size
 let pd = null;
-scr.addEventListener("pointerdown", e=>{ e.preventDefault(); pd={x:e.offsetX,y:e.offsetY,t:Date.now()};
-  try{ scr.setPointerCapture(e.pointerId); }catch(_){}
-  $("kbcap").focus({preventScroll:true}); });  // clicking the screen routes the keyboard to the device
-scr.addEventListener("pointerup", e=>{
-  if(!pd) return;
-  const ew=scr.clientWidth, eh=scr.clientHeight;
-  const dx=e.offsetX-pd.x, dy=e.offsetY-pd.y;
-  if(Math.hypot(dx,dy) > 12){
-    scrPost("swipe",{cx1:pd.x,cy1:pd.y,cx2:e.offsetX,cy2:e.offsetY,ew,eh,ms:Math.max(120,Date.now()-pd.t)});
-  } else {
-    scrPost("tap",{cx:pd.x,cy:pd.y,ew,eh});
-  }
-  pd=null;
+function dims(el){
+  if(el.tagName==="IMG") return [el.naturalWidth, el.naturalHeight];
+  if(el.tagName==="CANVAS") return [el.width, el.height];
+  return [el.videoWidth, el.videoHeight];
+}
+["scr","vcanvas","vvideo"].forEach(id=>{
+  const el = $(id);
+  el.addEventListener("pointerdown", e=>{ e.preventDefault(); pd={x:e.offsetX,y:e.offsetY,t:Date.now()};
+    try{ el.setPointerCapture(e.pointerId); }catch(_){}
+    $("kbcap").focus({preventScroll:true}); });   // clicking the screen routes the keyboard to the device
+  el.addEventListener("pointerup", e=>{
+    if(!pd) return;
+    const ew=el.clientWidth, eh=el.clientHeight, [iw, ih] = dims(el);
+    const dx=e.offsetX-pd.x, dy=e.offsetY-pd.y;
+    if(Math.hypot(dx,dy) > 12){
+      scrPost("swipe",{cx1:pd.x,cy1:pd.y,cx2:e.offsetX,cy2:e.offsetY,ew,eh,iw,ih,ms:Math.max(120,Date.now()-pd.t)});
+    } else {
+      scrPost("tap",{cx:pd.x,cy:pd.y,ew,eh,iw,ih});
+    }
+    pd=null;
+  });
 });
-
 $("ckback").onclick = ()=> scrPost("key",{name:"back"});
 $("ckhome").onclick = ()=> scrPost("key",{name:"home"});
 $("ckenter").onclick = ()=> scrPost("key",{name:"enter"});
@@ -1114,6 +1274,153 @@ kbcap.addEventListener("focus", ()=> $("conwrap").classList.add("kbon"));
 kbcap.addEventListener("blur", ()=>{ kbFlush(); $("conwrap").classList.remove("kbon"); });
 
 
+// ================= H.264 video: WebCodecs → MSE(fMP4) → PNG =================
+const ORDER = ["wc","mse","png"];
+let renderer = "png", vAbort = null, vFails = 0, vInfo = "", vfps = 0, vT = Date.now();
+const canWC  = ()=> !!(window.VideoDecoder && window.isSecureContext);
+const canMSE = ()=> !!(window.MediaSource && MediaSource.isTypeSupported('video/mp4; codecs="avc1.42C029"'));
+const usable = r => r==="png" || (r==="wc" ? canWC() : canMSE());
+function wanted(){
+  const q = new URLSearchParams(location.search).get("video") || lsGet("kakao.video", "auto");
+  if(ORDER.includes(q) && usable(q)) return q;
+  return ORDER.find(usable);
+}
+function showRenderer(r){
+  $("scr").hidden = r!=="png"; $("vcanvas").hidden = r!=="wc"; $("vvideo").hidden = r!=="mse";
+}
+function badge(){
+  $("vmode").textContent = renderer==="png" ? ("PNG " + ($("cfps").textContent||"")) :
+    ("H.264 " + renderer.toUpperCase() + (vInfo ? " " + vInfo : ""));
+}
+function vframe(){ vfps++; const now=Date.now(); if(now-vT>=1000){ $("cfps").textContent=vfps+" fps"; vfps=0; vT=now; badge(); } }
+function stopVideo(){ if(vAbort){ try{ vAbort.abort(); }catch(_){} vAbort=null; } }
+function usePNG(){ stopVideo(); renderer="png"; showRenderer("png"); pngWanted=true; startFrames(); badge(); }
+function fallback(from, why){
+  const next = ORDER.slice(ORDER.indexOf(from)+1).find(usable) || "png";
+  setStatus("화면 전달 " + from.toUpperCase() + " 실패(" + why + ") → " + next.toUpperCase());
+  startRenderer(next);
+}
+function startRenderer(r){
+  stopVideo();
+  if(r==="png"){ usePNG(); return; }
+  pngWanted = false; renderer = r; showRenderer(r); badge();
+  runStream(r).catch(e=>{
+    if(e && e.name==="AbortError") return;
+    if(++vFails <= 2 && renderer===r){ setTimeout(()=>{ if(renderer===r) startRenderer(r); }, 1200); return; }
+    vFails = 0; fallback(r, (e && e.message) || "error");
+  });
+}
+async function runStream(r){
+  const box = $("conwrap").getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  vAbort = new AbortController();
+  const resp = await fetch("/api/video/stream?fmt=" + (r==="mse" ? "fmp4" : "annexb") +
+    "&w=" + Math.round(box.width) + "&h=" + Math.round(box.height) + "&dpr=" + dpr, {signal: vAbort.signal});
+  if(!resp.ok) throw new Error("HTTP " + resp.status);
+  const sink = r==="wc" ? wcSink() : mseSink();
+  const reader = resp.body.getReader();
+  let buf = new Uint8Array(0);
+  for(;;){
+    const {value, done} = await reader.read();
+    if(done) throw new Error("stream ended");
+    const nb = new Uint8Array(buf.length + value.length); nb.set(buf); nb.set(value, buf.length); buf = nb;
+    let off = 0;
+    while(buf.length - off >= 5){
+      const t = buf[off], n = ((buf[off+1]<<24)|(buf[off+2]<<16)|(buf[off+3]<<8)|buf[off+4])>>>0;
+      if(buf.length - off < 5 + n) break;
+      sink(t, buf.subarray(off+5, off+5+n)); off += 5 + n;
+    }
+    buf = buf.slice(off);
+    vFails = 0;
+  }
+}
+function onMeta(m){
+  vInfo = (m.mode==="virtual" ? "가상 " : "미러 ") + m.w + "x" + m.h + (m.mode==="virtual" ? " flex" : "");
+  $("dsel").value = m.mode; badge();
+}
+function wcSink(){
+  const cv = $("vcanvas"), ctx = cv.getContext("2d");
+  let dec = null, cfg = null, waitKey = true;
+  return (t, p)=>{
+    if(t===1){
+      const m = JSON.parse(new TextDecoder().decode(p)); onMeta(m);
+      if(dec){ try{ dec.close(); }catch(_){} }
+      dec = new VideoDecoder({
+        output: f=>{ if(cv.width!==f.displayWidth || cv.height!==f.displayHeight){
+                       cv.width=f.displayWidth; cv.height=f.displayHeight; }
+                     ctx.drawImage(f, 0, 0); f.close(); vframe(); },
+        error: e=>{ fallback("wc", e.message); }});
+      dec.configure({codec: m.codec, optimizeForLatency: true});
+      waitKey = true;
+    } else if(t===2){ cfg = p.slice();
+    } else if(t===3 && dec && dec.state==="configured"){
+      const key = p[0]===1;
+      const pts = Number(new DataView(p.buffer, p.byteOffset+1, 8).getBigUint64(0));
+      let data = p.subarray(9);
+      if(!key && (waitKey || dec.decodeQueueSize > 8)){ waitKey = true; return; }   // resync on next key
+      if(key){ waitKey = false;
+        if(cfg){ const d = new Uint8Array(cfg.length + data.length); d.set(cfg); d.set(data, cfg.length); data = d; } }
+      dec.decode(new EncodedVideoChunk({type: key ? "key" : "delta", timestamp: pts, data}));
+    }
+  };
+}
+function mseSink(){
+  const v = $("vvideo");
+  let ms = null, sb = null, q = [];
+  function pump(){
+    if(!sb || sb.updating) return;
+    if(q.length){ try{ sb.appendBuffer(q.shift()); }catch(e){ fallback("mse", e.message); } return; }
+    const b = v.buffered;                     // stay at the live edge
+    if(b.length){
+      const end = b.end(b.length-1);
+      if(end - v.currentTime > 0.35) v.currentTime = Math.max(0, end - 0.05);
+      if(b.start(0) < v.currentTime - 20){ try{ sb.remove(b.start(0), v.currentTime - 10); }catch(_){} }
+    }
+    if(v.paused) v.play().catch(()=>{});
+  }
+  function reset(codec){
+    q = []; sb = null;
+    ms = new MediaSource(); v.src = URL.createObjectURL(ms);
+    ms.addEventListener("sourceopen", ()=>{
+      try{ sb = ms.addSourceBuffer('video/mp4; codecs="' + codec + '"'); }
+      catch(e){ fallback("mse", e.message); return; }
+      sb.mode = "sequence";                   // back-to-back: a static screen leaves no gaps
+      sb.addEventListener("updateend", pump); pump();
+    }, {once: true});
+  }
+  v.addEventListener("timeupdate", pump);
+  return (t, p)=>{
+    if(t===1){ const m = JSON.parse(new TextDecoder().decode(p)); onMeta(m); reset(m.codec); }
+    else if(t===2 || t===3){ q.push(p.slice()); pump(); if(t===3) vframe(); }
+  };
+}
+// flex: keep the virtual display matched to the screen area (debounced)
+let rzT = null, lastRz = "";
+new ResizeObserver(()=>{
+  if(renderer==="png") return;
+  clearTimeout(rzT);
+  rzT = setTimeout(()=>{
+    const b = $("conwrap").getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const k = Math.round(b.width)+"x"+Math.round(b.height)+"@"+dpr;
+    if(k===lastRz) return; lastRz = k;
+    fetch("/api/video/resize", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({w: b.width, h: b.height, dpr})}).catch(()=>{});
+  }, 300);
+}).observe($("conwrap"));
+$("rsel").value = lsGet("kakao.video", "auto");
+$("rsel").onchange = ()=>{ lsSet("kakao.video", $("rsel").value); vFails = 0; startRenderer(wanted()); };
+$("dsel").onchange = ()=>{
+  fetch("/api/video/mode", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({mode: $("dsel").value})}).then(r=>r.json()).then(j=>{
+      setStatus("디스플레이: " + (j.mode==="virtual" ? "가상(flex)" : "미러")); }).catch(()=>{});
+};
+setInterval(()=>{                                  // surface server-side fallbacks (VD → mirror)
+  if(renderer==="png") return;
+  fetch("/api/video/info").then(r=>r.json()).then(j=>{
+    if(j.note) setStatus(j.note);
+    if(j.mode && $("dsel").value!==j.mode) $("dsel").value = j.mode;
+  }).catch(()=>{});
+}, 4000);
+
 // ---- startup: the console needs the screen API (local bind or --allow-screen) ----
 fetch("/api/screen/info").then(r=>r.json()).then(j=>{
   if(!j.enabled){
@@ -1121,7 +1428,7 @@ fetch("/api/screen/info").then(r=>r.json()).then(j=>{
       '<b>--allow-screen</b> 으로 켜야 합니다(계정 전체 원격 조작이므로 SSH 터널/Tailscale 권장).</div>';
     $("vmode").textContent = "OFF"; return;
   }
-  startFrames();
+  startRenderer(wanted());
   loadPane("android", fp.android.path);
   loadPane("local", fp.local.path);
 }).catch(()=>{});
