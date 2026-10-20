@@ -38,10 +38,7 @@ const hasRow = (p, w, n) => p.waitForFunction(([w,n])=>[...document.querySelecto
   const p = await ctx.newPage(); p.setDefaultTimeout(60000);
   const errs=[]; p.on('pageerror', e=>errs.push(e.message));
   try {
-    await p.goto(BASE + '#chat', {waitUntil:'domcontentloaded'});
-    await p.waitForFunction(()=>document.querySelectorAll('#list .row').length>0, null, {timeout:60000});
-    if (await p.evaluate(()=>document.body.dataset.mode) !== 'console') await p.keyboard.press('c');
-    await p.waitForFunction(()=>document.body.dataset.mode==='console', null, {timeout:10000});
+    await p.goto(BASE, {waitUntil:'domcontentloaded'});
     await p.waitForFunction(()=>document.querySelectorAll('#flist-android .frow').length>2, null, {timeout:30000});
     // watch every job text so we can prove progress was reported mid-upload
     await p.evaluate(()=>{ window.__pct=[]; new MutationObserver(()=>{

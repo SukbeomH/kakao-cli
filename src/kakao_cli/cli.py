@@ -146,7 +146,7 @@ examples:
   kakao poll me                              # stream new messages from one room (NDJSON)
   kakao pull-media ./inbox --new-only        # pull received media incrementally
   kakao tui                                  # interactive terminal UI
-  kakao webui --port 8800                    # same UI in a browser (localhost)
+  kakao webui --port 8800                    # device console in a browser (localhost)
 
 Receive model: `poll <room>` opens one room and streams newly-arrived messages
 (text + [Photo]/[Video]); robust, no notification/background dependency. `watch`
@@ -165,7 +165,7 @@ _DESC = {
     "track": "Poll the whole chat list and emit each room's newest message when it changes.",
     "poll": "Open ONE room and stream its newly-arrived messages (recommended receive).",
     "tui": "Interactive terminal UI: browse rooms, read live, and send.",
-    "webui": "Serve the TUI's UI in a browser (stdlib HTTP, localhost by default).",
+    "webui": "Device console in a browser: live screen + keyboard + file manager (chat: use tui).",
 }
 
 

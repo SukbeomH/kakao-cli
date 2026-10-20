@@ -1,16 +1,14 @@
-"""Web UI — the TUI's look and feel in a browser (stdlib only).
+"""Web UI — a device console in the browser (stdlib only).
 
-Same shape as the curses TUI: a single background :class:`~kakao_cli.worker.Worker`
-owns the Driver and serializes device access; the HTTP layer only pushes commands
-in and serves a lock-guarded snapshot of state out. No third-party deps, no CDN —
-the page (HTML/CSS/JS) is inlined and served from memory.
+The web UI is console-only: the live device screen in the center (click/drag
+→ tap/swipe, keyboard capture → device) and two file managers on the left
+(device storage / the webui host's disk) with copy, upload and download.
+Chat lives in the CLI/TUI; the web UI no longer has a chat mode.
 
-Endpoints:
-  GET  /                      the single-page UI
-  GET  /api/state?since=N     current snapshot (204 if seq still == N)
-  POST /api/open   {"room"}   open a room
-  POST /api/send   {"text"}   send into the open room (400 if none open)
-  POST /api/rooms             refresh the room list
+A single background Worker owns the Driver and serializes UI-touching device
+access (PNG capture fallback, adb input, ADBKeyBoard text); file listings and
+transfers call adb directly from handler threads (adb's server serializes
+transports). No third-party deps, no CDN — the page is inlined.
 """
 from __future__ import annotations
 import json
@@ -50,110 +48,23 @@ KEYCODES = {
 
 
 class State:
-    """Lock-guarded snapshot the HTTP layer serves; fed by the event pump.
-
-    Mirrors the TUI's state transitions exactly: opening a room clears the view
-    and leaves ``room`` None until the worker's ``opened`` event, and a
-    ``messages`` event for a room other than the current one is dropped — so the
-    previous room's log never flashes into the new one.
-    """
+    """What the console page polls: a status line (worker errors etc.).
+    `seq` only bumps on a real change so idle polls answer 204."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.seq = 0
-        self.rooms: list[dict] = []
-        self.room: str | None = None   # confirmed-open room
-        self.pending: str | None = None  # room we asked to open
-        self.messages: list[dict] = []
         self.status = "starting …"
-        self.login_needed = False
-        self.exports: dict[str, dict] = {}     # export id -> {ready, token?, name?, error?}
-        self.downloads: dict[str, dict] = {}   # token -> {path, name, mime}
-
-    def _bump(self):
-        self.seq += 1
 
     def snapshot(self) -> dict:
         with self.lock:
-            # serve messages without device-pixel bounds the browser doesn't need
-            msgs = [{k: v for k, v in m.items() if k != "bounds"}
-                    if isinstance(m, dict) else {"kind": "text", "text": m}
-                    for m in self.messages]
-            return {"seq": self.seq, "rooms": self.rooms, "room": self.room,
-                    "messages": msgs, "status": self.status,
-                    "login_needed": self.login_needed}
+            return {"seq": self.seq, "status": self.status}
 
-    def export_pending(self, xid: str):
+    def set_status(self, text: str):
         with self.lock:
-            self.exports[xid] = {"ready": False}
-
-    def export_done(self, xid: str, path: str, name: str, mime: str) -> str:
-        import uuid
-        token = uuid.uuid4().hex
-        with self.lock:
-            self.downloads[token] = {"path": path, "name": name, "mime": mime}
-            self.exports[xid] = {"ready": True, "token": token, "name": name, "mime": mime}
-        return token
-
-    def export_failed(self, xid: str, error: str):
-        with self.lock:
-            self.exports[xid] = {"ready": False, "error": error}
-
-    def export_status(self, xid: str) -> dict | None:
-        with self.lock:
-            e = self.exports.get(xid)
-            return dict(e) if e else None
-
-    def download(self, token: str) -> dict | None:
-        with self.lock:
-            d = self.downloads.get(token)
-            return dict(d) if d else None
-
-    def has_target(self) -> bool:
-        """A room is open, or an open is in flight. Commands queue behind that
-        open (open is enqueued first), so send/sendfile are safe to accept —
-        this avoids a 400 during the brief want_open gap when a row is reclicked."""
-        with self.lock:
-            return bool(self.room or self.pending)
-
-    def want_open(self, room: str):
-        with self.lock:
-            self.pending = room
-            self.room = None
-            self.messages = []
-            self._bump()
-
-    def apply(self, kind, data):
-        with self.lock:
-            # only bump seq on a real change — the worker re-emits identical
-            # rooms/status/messages every poll, and bumping each time would make
-            # the browser rebuild the DOM ~every 2.5s (flicker, scroll yank,
-            # lost input focus). Dedupe here so unchanged polls stay 204.
-            if kind == "rooms":
-                if data == self.rooms:
-                    return
-                self.rooms = data
-            elif kind == "status":
-                if data == self.status:
-                    return
-                self.status = data
-            elif kind == "opened":
-                if data == self.room and self.pending is None:
-                    return
-                self.room = data
-                self.pending = None
-            elif kind == "messages":
-                room, msgs = data
-                if room != self.room:
-                    return  # stale (previous room) — don't bump
-                if msgs == self.messages:
-                    return
-                self.messages = msgs
-            elif kind == "login":
-                if data == self.login_needed:
-                    return
-                self.login_needed = data
-            self._bump()
+            if text != self.status:
+                self.status = text
+                self.seq += 1
 
 
 def _pump(worker: Worker, state: State):
@@ -162,21 +73,9 @@ def _pump(worker: Worker, state: State):
             kind, data = worker.events.get(timeout=1.0)
         except queue.Empty:
             continue
-        if kind == "export_result":
-            state.export_done(data["id"], data["path"], data["name"], data["mime"])
-        elif kind == "export_error":
-            state.export_failed(data["id"], data.get("error", "export failed"))
-        else:
-            state.apply(kind, data)
-
-
-def _safe_name(raw: str) -> str:
-    """Browser filename -> a shell/picker-safe basename, keeping the extension.
-    `\\w` keeps Hangul; drop path separators and anything that could break the
-    unquoted `am broadcast -d file://…` / DocumentsUI search in send_doc."""
-    base = os.path.basename(unquote(raw or "")) or "file"
-    safe = re.sub(r"[^\w.\-]+", "_", base).strip("._") or "file"
-    return safe
+        if kind == "status":
+            state.set_status(data)
+        # (chat events don't exist in the console-only web UI)
 
 
 def make_handler(worker: Worker, state: State, tmpdir: str,
@@ -315,18 +214,6 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                     self.end_headers()
                     return
                 self._json(200, snap)
-            elif path.startswith("/api/export/"):
-                xid = path[len("/api/export/"):]
-                st = state.export_status(xid)
-                if st is None:
-                    return self._json(404, {"error": "unknown export"})
-                self._json(200, st)
-            elif path.startswith("/api/download/"):
-                token = path[len("/api/download/"):]
-                d = state.download(token)
-                if not d or not os.path.exists(d["path"]):
-                    return self._json(404, {"error": "expired"})
-                self._serve_file(d["path"], d["name"], d["mime"])
             elif path == "/api/screen/info":
                 if screen_enabled:
                     screen.touch()     # polling info keeps the viewer alive (cheap)
@@ -414,61 +301,7 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                     self.wfile.write(chunk)
 
         def do_POST(self):
-            if self.path == "/api/open":
-                room = (self._read_json().get("room") or "").strip()
-                if not room:
-                    return self._json(400, {"error": "room required"})
-                state.want_open(room)
-                worker.put("open", room)
-                self._json(200, {"ok": True, "room": room})
-            elif self.path == "/api/send":
-                text = self._read_json().get("text") or ""
-                if not state.has_target():
-                    return self._json(400, {"error": "no room open"})
-                if not text.strip():
-                    return self._json(400, {"error": "empty text"})
-                worker.put("send", text)
-                self._json(200, {"ok": True})
-            elif self.path.split("?", 1)[0] == "/api/sendfile":
-                if not state.has_target():
-                    return self._json(400, {"error": "no room open"})
-                n = int(self.headers.get("Content-Length") or 0)
-                if n <= 0:
-                    return self._json(400, {"error": "empty body"})
-                name = ""
-                if "?" in self.path:
-                    q = parse_qs(self.path.split("?", 1)[1])
-                    name = (q.get("name") or [""])[0]
-                safe = _safe_name(name)
-                dest = os.path.join(tmpdir, f"{int(time.time() * 1000)}_{safe}")
-                remaining = n
-                with open(dest, "wb") as f:  # stream — never buffer a whole video
-                    while remaining > 0:
-                        chunk = self.rfile.read(min(1 << 20, remaining))
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        remaining -= len(chunk)
-                worker.put("sendfile", dest)
-                self._json(200, {"ok": True, "name": safe})
-            elif self.path == "/api/export":
-                if not state.has_target():
-                    return self._json(400, {"error": "no room open"})
-                body = self._read_json()
-                kind = body.get("kind")
-                if kind not in ("photo", "video", "file"):
-                    return self._json(400, {"error": "bad kind"})
-                rank = body.get("rank")
-                name = body.get("name") or ""
-                import uuid
-                xid = uuid.uuid4().hex
-                state.export_pending(xid)
-                worker.put("export", xid, kind, rank if isinstance(rank, int) else -1, name)
-                self._json(202, {"id": xid})
-            elif self.path == "/api/rooms":
-                worker.put("rooms")
-                self._json(200, {"ok": True})
-            elif self.path.startswith("/api/screen/"):
+            if self.path.startswith("/api/screen/"):
                 self._screen_control()
             elif self.path in ("/api/fs/pull", "/api/fs/push"):
                 self._fs_transfer()
@@ -709,7 +542,7 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
     # the screen view / console is full-account remote control; off by default on
     # non-local binds unless explicitly allowed
     screen_enabled = _is_local(host) or allow_screen
-    worker = Worker(dev, export_dir=tmpdir, screen=screen)
+    worker = Worker(dev, screen=screen, chat=False)
     worker.start()
     httpd = serve(worker, host, port, tmpdir=tmpdir, screen=screen,
                   screen_enabled=screen_enabled, fs_root=fs_root,
@@ -735,20 +568,18 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
         worker.put("quit")
 
 
-# --- the single page: TUI tone & manner (monospace, dark, reverse-video bars),
-# responsive down to phones (single-screen list↔conversation) ---
+# --- the single page: device console in the TUI tone (monospace, dark, reverse-video bars) ---
 PAGE = r"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#16161e">
-<title>kakao-cli</title>
+<title>kakao-cli 콘솔</title>
 <style>
   :root{
     --bg:#16161e; --fg:#c0caf5; --dim:#565f89; --bar:#2a2e42; --barfg:#c0caf5;
     --sel:#3d59a1; --selfg:#ffffff; --accent:#7aa2f7; --unread:#e0af68;
     --line:#2a2e42; --me:#9ece6a;
-    --safe-b:env(safe-area-inset-bottom,0px);
-    --safe-t:env(safe-area-inset-top,0px);
+    --safe-b:env(safe-area-inset-bottom,0px); --safe-t:env(safe-area-inset-top,0px);
   }
   *{box-sizing:border-box}
   html,body{height:100%;margin:0}
@@ -760,132 +591,22 @@ PAGE = r"""<!doctype html>
   .bar{background:var(--bar);color:var(--barfg);padding:4px 10px;white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis;flex:0 0 auto}
   .bar .k{color:var(--accent)}
-  #header{padding-top:calc(4px + var(--safe-t))}
-  .main{flex:1 1 auto;display:flex;min-height:0}
-  .list{flex:0 0 32%;max-width:360px;min-width:200px;overflow-y:auto;
-    border-right:1px solid var(--line);padding:4px 0;-webkit-overflow-scrolling:touch}
-  .row{padding:5px 10px;cursor:pointer;overflow:hidden}
-  .row:hover{background:var(--line)}
-  .row.sel{background:var(--sel);color:var(--selfg)}
-  .row .r1{display:flex;gap:6px;align-items:baseline}
-  .row .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .row.unread .nm{font-weight:bold;color:var(--unread)}
-  .row.sel.unread .nm{color:var(--selfg)}
-  .row .mc{color:var(--dim);font-weight:normal}
-  .row.sel .mc{color:var(--selfg)}
-  .row .tm{color:var(--dim);font-size:12px;white-space:nowrap}
-  .row.sel .tm{color:var(--selfg)}
-  .row .r2{display:flex;gap:6px;align-items:baseline;margin-top:1px}
-  .row .pv{flex:1;color:var(--dim);white-space:nowrap;overflow:hidden;
-    text-overflow:ellipsis;font-size:13px}
-  .row.sel .pv{color:var(--selfg)}
-  .row .badge{color:var(--unread);font-weight:bold;white-space:nowrap}
-  .row.sel .badge{color:var(--selfg)}
-  .row .mute{color:var(--dim)}
-  .pane{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;position:relative}
-  .title{display:flex;align-items:center;gap:6px;padding:4px 12px;color:var(--accent);
-    font-weight:bold;border-bottom:1px solid var(--line)}
-  .title #titletext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
-  .back{display:none;color:var(--accent);font-weight:bold;padding:4px 8px;
-    min-width:36px;border-radius:4px}
-  .back:hover{background:var(--line)}
-  .msgs{flex:1 1 auto;overflow-y:auto;padding:6px 12px;-webkit-overflow-scrolling:touch;
-    position:relative}
-  .msg{display:flex;align-items:baseline;gap:6px;padding:1px 0;word-break:break-word}
-  .msg .who{flex:0 0 8ch;max-width:8ch;text-align:right;white-space:nowrap;overflow:hidden;
-    text-overflow:ellipsis;color:var(--accent)}
-  .msg .sep{color:var(--line)}
-  .msg .body{flex:1;min-width:0;white-space:pre-wrap}
-  .msg.me .who{color:var(--me)}
-  .msg.me .body{color:var(--me)}
-  .dlbtn{color:inherit;text-align:left;padding:0;cursor:pointer}
-  .dlbtn:hover{text-decoration:underline}
-  .dlbtn .dlico{color:var(--accent)}
-  .dlbtn.dl-busy{opacity:.55}
-  .dlbtn.dl-busy .dlico::after{content:" …"}
-  .daterow{position:sticky;top:0;z-index:3;text-align:center;color:var(--dim);
-    white-space:pre;padding:4px 0;background:var(--bg);font-size:12px}
-  .newmsg{position:absolute;left:50%;transform:translateX(-50%);bottom:64px;
-    display:none;background:var(--sel);color:var(--selfg);border-radius:14px;
-    padding:4px 12px;box-shadow:0 1px 6px rgba(0,0,0,.4);z-index:5}
-  .newmsg.show{display:block}
-  .inputline{display:flex;align-items:center;gap:6px;padding:4px 12px;
-    border-top:1px solid var(--line);padding-bottom:calc(4px + var(--safe-b))}
-  .inputline .prompt{color:var(--accent)}
-  .inputline.blur .prompt{color:var(--dim)}
-  .attach{color:var(--accent);font-weight:bold;user-select:none;
-    min-width:32px;text-align:center}
-  .attach:hover{color:var(--unread)}
-  .inputline #input{flex:1;background:transparent;border:none;color:var(--fg);
-    font-family:inherit;font-size:16px;line-height:1.4;outline:none;min-width:0;
-    resize:none;max-height:40vh;overflow-y:auto}
-  .send{color:var(--accent);font-weight:bold;padding:4px 10px;border-radius:4px;
-    align-self:flex-end}
-  .send:hover{background:var(--line)}
-  .empty{color:var(--dim);padding:8px 12px}
-  .inputline.drop{outline:2px dashed var(--accent);outline-offset:-4px}
-  .scrbtn{color:var(--accent);padding:4px 8px;border-radius:4px;white-space:nowrap}
-  .scrbtn:hover{background:var(--line)}
-  .statusbar{display:flex;align-items:center;gap:8px}
-  .statusbar #status{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .statusbar .scrbtn{min-height:32px}
-  .banner{background:#4d3b1a;color:var(--unread);padding:6px 12px;
-    border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
-  .banner[hidden]{display:none}
-  .banner button{color:var(--accent);font-weight:bold;border:1px solid var(--accent);
-    border-radius:4px;padding:2px 8px}
-  /* live device screen overlay */
-  .screenovl .scrpanel{max-width:520px;margin:0 auto;height:100%;display:flex;
-    flex-direction:column;padding:8px}
-  .scrbar{display:flex;gap:6px;align-items:center;padding:4px 0;flex:0 0 auto}
-  .scrbar button{color:var(--accent);border:1px solid var(--line);border-radius:4px;
-    padding:6px 10px;min-height:40px}
-  .scrbar button:hover{background:var(--line)}
-  .scrbar .fps{margin-left:auto;color:var(--dim);font-size:12px}
-  .scrwrap{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;
-    background:#000;border:1px solid var(--line);border-radius:4px}
-  #scr{max-width:100%;max-height:100%;object-fit:contain;touch-action:none;
-    user-select:none;-webkit-user-select:none}
-  .scrinput{display:flex;gap:6px;padding:6px 0;flex:0 0 auto;
-    padding-bottom:calc(6px + var(--safe-b))}
-  .scrinput input{flex:1;background:transparent;border:1px solid var(--line);
-    border-radius:4px;color:var(--fg);font-family:inherit;font-size:16px;padding:8px;outline:none}
-  .scrinput button{color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:0 14px;min-height:40px}
-
-  /* overlays: quick switcher + help (unicode/text only, TUI tone) */
-  .ovl{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:20;
-    padding-top:10vh}
-  .ovl.show{display:block}
-  .panel{max-width:560px;margin:0 auto;background:var(--bg);border:1px solid var(--line);
-    border-radius:6px;overflow:hidden;box-shadow:0 6px 30px rgba(0,0,0,.5)}
-  .panel .qin{width:100%;background:transparent;border:none;border-bottom:1px solid var(--line);
-    color:var(--fg);font-family:inherit;font-size:16px;padding:10px 12px;outline:none}
-  .panel .res{max-height:50vh;overflow-y:auto}
-  .panel .res .row{padding:8px 12px}
-  .panel .help{padding:12px 16px;line-height:1.8;white-space:pre-wrap}
-  .panel .help b{color:var(--accent)}
-  .panel h3{margin:0;padding:10px 12px;color:var(--accent);border-bottom:1px solid var(--line)}
-
-  /* mode switch (채팅 | 콘솔) */
-  #header{display:flex;align-items:center;gap:10px}
+  #header{display:flex;align-items:center;gap:10px;padding-top:calc(4px + var(--safe-t))}
   #header .hint{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .modes{display:flex;gap:2px;flex:0 0 auto}
-  .modes button{padding:0 10px;border-radius:3px;color:var(--dim)}
-  .modes button.on{background:var(--sel);color:var(--selfg)}
-  .modes button:disabled{opacity:.4;cursor:default}
-
-  /* console: file managers (left, split) + live device screen (center) */
-  .console{flex:1 1 auto;display:none;min-height:0}
-  body[data-mode="console"] .main{display:none}
-  body[data-mode="console"] .console{display:flex}
+  #header button{color:var(--accent);padding:0 8px}
+  .statusbar{display:flex;align-items:center;gap:8px;padding-bottom:calc(4px + var(--safe-b))}
+  .statusbar #status{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .badge{color:var(--accent);font-size:12px;white-space:nowrap}
+  .console{flex:1 1 auto;display:flex;min-height:0}
   .side{flex:0 0 34%;max-width:460px;min-width:260px;display:flex;flex-direction:column;
     border-right:1px solid var(--line);min-height:0}
-  .fpane{flex:1 1 50%;display:flex;flex-direction:column;min-height:0;
-    border-bottom:1px solid var(--line)}
+  .fpane{flex:1 1 50%;display:flex;flex-direction:column;min-height:0;border-bottom:1px solid var(--line)}
   .fhead{display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--bar)}
   .fhead b{color:var(--accent);white-space:nowrap;font-size:13px}
   .fhead input{flex:1;min-width:0;background:transparent;border:1px solid var(--line);
     border-radius:3px;color:var(--fg);font-family:inherit;font-size:13px;padding:2px 6px;outline:none}
+  .fhead .fbtn{color:var(--accent);border:1px solid var(--line);border-radius:3px;padding:1px 8px;
+    white-space:nowrap;font-size:12px}
   .flist{flex:1 1 auto;overflow-y:auto;font-size:13px}
   .frow{display:flex;gap:8px;padding:3px 10px;cursor:pointer;white-space:nowrap}
   .frow:hover{background:var(--line)}
@@ -894,77 +615,53 @@ PAGE = r"""<!doctype html>
   .frow.dir .fn{color:var(--accent)}
   .frow.sel{background:var(--sel);color:var(--selfg)}
   .frow.sel .fn,.frow.sel .fs{color:var(--selfg)}
-  .ffoot{display:flex;gap:6px;padding:4px 8px;border-top:1px solid var(--line);align-items:center}
-  .ffoot .fsel{flex:1;min-width:0;color:var(--dim);font-size:12px;overflow:hidden;
-    text-overflow:ellipsis;white-space:nowrap}
-  .ffoot button{color:var(--accent);border:1px solid var(--line);border-radius:3px;
-    padding:3px 10px;white-space:nowrap}
-  .ffoot button:disabled{color:var(--dim);cursor:default}
-  .ferr{color:#f7768e;padding:6px 10px;font-size:12px;white-space:normal}
-  .fhead .fbtn{color:var(--accent);border:1px solid var(--line);border-radius:3px;padding:1px 8px;
-    white-space:nowrap;font-size:12px}
   .frow .fdl{color:var(--accent);padding:0 4px;visibility:hidden}
   .frow:hover .fdl,.frow.sel .fdl{visibility:visible}
   @media (hover:none){ .frow .fdl{visibility:visible} }
   .fpane.drop{outline:2px dashed var(--accent);outline-offset:-3px}
+  .ffoot{display:flex;gap:6px;padding:4px 8px;border-top:1px solid var(--line);align-items:center}
+  .ffoot .fsel{flex:1;min-width:0;color:var(--dim);font-size:12px;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .ffoot button{color:var(--accent);border:1px solid var(--line);border-radius:3px;padding:3px 10px;white-space:nowrap}
+  .ffoot button:disabled{color:var(--dim);cursor:default}
+  .ferr{color:#f7768e;padding:6px 10px;font-size:12px;white-space:normal}
+  .empty{color:var(--dim);padding:8px 12px}
   .jobs{flex:0 0 auto;max-height:22%;overflow-y:auto;font-size:12px;padding:2px 8px}
   .job{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .job.running{color:var(--unread)} .job.done{color:var(--me)} .job.error{color:#f7768e}
   .center{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;padding:6px}
-  .center .scrwrap{position:relative}
-  .center .scrwrap.kbon{box-shadow:0 0 0 2px var(--accent) inset}
+  .scrbar{display:flex;gap:6px;align-items:center;padding:4px 0;flex:0 0 auto}
+  .scrbar button{color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:6px 10px;min-height:36px}
+  .scrbar button:hover{background:var(--line)}
+  .scrbar .fps{margin-left:auto;color:var(--dim);font-size:12px;white-space:nowrap}
   .kbhint{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #kbcap{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;
-    padding:0;resize:none;font-size:16px}
-
-  /* phones / narrow: single-screen navigation (list <-> conversation) */
+  .scrwrap{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;
+    background:#000;border:1px solid var(--line);border-radius:4px;position:relative}
+  .scrwrap.kbon{box-shadow:0 0 0 2px var(--accent) inset}
+  #scr{max-width:100%;max-height:100%;object-fit:contain;touch-action:none;
+    user-select:none;-webkit-user-select:none}
+  #kbcap{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;
+    resize:none;font-size:16px}
+  .disabled-note{color:var(--unread);padding:16px;text-align:center;white-space:normal}
+  .ovl{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:20;padding-top:10vh}
+  .ovl.show{display:block}
+  .panel{max-width:560px;margin:0 auto;background:var(--bg);border:1px solid var(--line);
+    border-radius:6px;overflow:hidden;box-shadow:0 6px 30px rgba(0,0,0,.5)}
+  .panel h3{margin:0;padding:10px 12px;color:var(--accent);border-bottom:1px solid var(--line)}
+  .panel .help{padding:12px 16px;line-height:1.8;white-space:pre-wrap}
+  .panel .help b{color:var(--accent)}
   @media (max-width:720px){
-    body[data-mode="console"] .console{flex-direction:column}
+    #header .hint .long{display:none}
+    .console{flex-direction:column}
     .side{flex:1 1 45%;max-width:none;min-width:0;border-right:none}
     .center{flex:0 0 55%;order:-1}
-    #header{display:none}
-    .list{flex:1 1 auto;max-width:none;min-width:0;border-right:none}
-    .pane{flex:1 1 auto}
-    .row{min-height:44px;display:flex;flex-direction:column;justify-content:center}
-    .back{display:inline-block}
-    .attach{min-width:44px;min-height:44px;line-height:44px;font-size:22px}
-    .send{min-height:44px;padding:0 14px}
-    .title{min-height:44px}
-    body[data-view="list"] .pane{display:none}
-    body[data-view="convo"] .list{display:none}
+    .scrbar button{min-height:40px}
   }
-  @media (hover:none){ .msg.dl:active{opacity:.6} .row:active{background:var(--line)} }
 </style></head>
-<body data-view="list" data-mode="chat">
-  <div class="bar" id="header"><span class="hint" id="hint"></span>
-    <span class="modes" role="tablist" aria-label="모드">
-      <button id="m-chat" class="on" role="tab">채팅</button>
-      <button id="m-console" role="tab" title="콘솔: 기기 화면 + 파일 (c)">콘솔</button>
-    </span></div>
-  <div class="banner" id="loginbanner" hidden>
-    로그인이 필요합니다 — <button id="loginopen">화면 열기</button>
-  </div>
-  <div class="main">
-    <div class="list" id="list" role="listbox" aria-label="채팅방 목록"></div>
-    <div class="pane">
-      <div class="title bar" id="title">
-        <button class="back" id="back" aria-label="목록으로">←</button>
-        <span id="titletext">(select a room)</span>
-        <button class="scrbtn" id="scrbtn" title="기기 화면 (g)" aria-label="기기 화면">⧉ 화면</button>
-      </div>
-      <div class="msgs" id="msgs" role="log" aria-live="polite"><div class="empty">—</div></div>
-      <button class="newmsg" id="newmsg" aria-label="새 메시지로 이동">새 메시지 ↓</button>
-      <div class="inputline blur" id="inputline">
-        <button class="attach" id="attach" title="파일/이미지 첨부" aria-label="첨부">+</button>
-        <input type="file" id="file" hidden>
-        <span class="prompt">&gt;</span>
-        <textarea id="input" rows="1" autocomplete="off" spellcheck="false"
-               enterkeyhint="send"
-               placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
-        <button class="send" id="send">보내기</button>
-      </div>
-    </div>
-  </div>
+<body>
+  <div class="bar" id="header"><span class="hint"><span class="k">kakao-cli</span> 콘솔<span class="long"> —
+    화면 클릭: 탭·키보드 · 드래그: 스와이프 · Esc: 키보드 해제</span></span>
+    <button id="helpbtn" title="도움말 (?)">?</button></div>
   <div class="console" id="console">
     <div class="side">
       <div class="fpane" id="fp-android">
@@ -978,8 +675,7 @@ PAGE = r"""<!doctype html>
       </div>
       <div class="fpane" id="fp-local">
         <div class="fhead"><b>로컬(VM)</b>
-          <input id="fpath-local" spellcheck="false" autocomplete="off" aria-label="로컬 경로"
-                 placeholder="(루트)">
+          <input id="fpath-local" spellcheck="false" autocomplete="off" aria-label="로컬 경로" placeholder="(루트)">
           <button class="fbtn" id="up-local" title="브라우저 파일을 이 VM 폴더로 (드래그앤드롭도 됨)">⇪ 올리기</button>
           <input type="file" id="upf-local" multiple hidden></div>
         <div class="flist" id="flist-local" role="listbox" aria-label="로컬 파일"></div>
@@ -995,490 +691,74 @@ PAGE = r"""<!doctype html>
         <span class="fps" id="cfps"></span>
       </div>
       <div class="scrwrap" id="conwrap"><textarea id="kbcap" autocomplete="off" spellcheck="false"
-        aria-label="기기 키보드 입력"></textarea></div>
+        aria-label="기기 키보드 입력"></textarea><img id="scr" alt="기기 화면" draggable="false"></div>
     </div>
   </div>
   <div class="bar statusbar" id="statusbar">
     <span id="status" role="status">starting …</span>
-    <button class="scrbtn" id="mconsole" title="콘솔/채팅 전환 (c)">⌨ 콘솔</button>
-    <button class="scrbtn" id="scrbtn2" title="기기 화면 (g)" aria-label="기기 화면">⧉ 화면</button>
+    <span class="badge" id="vmode" title="화면 전달 방식">PNG</span>
   </div>
-
-  <div class="ovl" id="switcher">
-    <div class="panel">
-      <input class="qin" id="qin" placeholder="방 이름 필터 — ↑↓ 이동, Enter 열기, Esc 닫기"
-             autocomplete="off" spellcheck="false">
-      <div class="res" id="qres" role="listbox" aria-label="방 빠른 전환"></div>
-    </div>
-  </div>
-  <div class="ovl" id="helpovl">
-    <div class="panel">
-      <h3>키 도움말</h3>
-      <div class="help" id="helptext"></div>
-    </div>
-  </div>
-  <div class="ovl screenovl" id="screenovl">
-    <div class="scrpanel">
-      <div class="scrbar">
-        <button id="scrclose">✕ 닫기</button>
-        <button id="kbback">Back</button>
-        <button id="kbhome">Home</button>
-        <button id="kbenter">Enter</button>
-        <span class="fps" id="fps"></span>
-      </div>
-      <div class="scrwrap"><img id="scr" alt="기기 화면" draggable="false"></div>
-      <div class="scrinput">
-        <input id="scrtext" type="text" placeholder="화면에 텍스트 입력(한글 OK)"
-               autocomplete="off" spellcheck="false">
-        <button id="scrsend">입력</button>
-      </div>
-    </div>
-  </div>
+  <div class="ovl" id="helpovl"><div class="panel"><h3>콘솔 도움말</h3><div class="help" id="helptext"></div></div></div>
 <script>
 "use strict";
-const HINT = '<span class="k">kakao-cli</span> — ' +
-  '<span class="k">Tab</span>: focus  ' +
-  '<span class="k">↑↓/Enter</span>: room  ' +
-  '<span class="k">Enter</span>: send  ' +
-  '<span class="k">/ or Ctrl+K</span>: 전환  ' +
-  '<span class="k">?</span>: 도움말';
-const HELP =
-  '<b>Tab</b>  목록 ↔ 입력 포커스 전환\n' +
-  '<b>↑ ↓</b>  목록에서 방 이동 · <b>Enter</b> 열기\n' +
-  '<b>Enter</b>  전송 · <b>Shift+Enter</b> 줄바꿈\n' +
-  '<b>/ · Ctrl+K</b>  빠른 방 전환(퍼지 필터)\n' +
-  '<b>Alt+↑ / Alt+↓</b>  이전 / 다음 방\n' +
-  '<b>Alt+Shift+↑/↓</b>  이전 / 다음 안읽음 방\n' +
-  '<b>Esc</b>  목록으로 · <b>r</b> 새로고침 · <b>+</b> 파일\n' +
-  '<b>m</b>  현재 방 조용히(알림/배지 제외) 토글\n' +
-  '<b>n</b>  탭이 숨겨졌을 때 알림 켜기/끄기\n' +
-  '<b>g</b>  기기 화면 보기·조작(로그인용)\n' +
-  '<b>c</b>  콘솔 ↔ 채팅 전환 (콘솔: 기기 화면 + 파일 복사)\n' +
-  '  콘솔에서 화면 클릭 → 키보드가 기기로 (한글 OK), <b>Esc</b> 해제\n' +
-  '<b>?</b>  이 도움말';
 const $ = id => document.getElementById(id);
-$("hint").innerHTML = HINT;
-
-let st = {seq:-1, rooms:[], room:null, messages:[], status:""};
-let sel = 0, focus = "list", view = "list", mode = "chat";
-const input = $("input");
-
 const esc = s => (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const isMobile = () => window.matchMedia("(max-width:720px)").matches;
-
-// ---- client-side prefs (localStorage): quiet rooms, drafts, notifications ----
 const lsGet = (k,d) => { try{ return JSON.parse(localStorage.getItem(k)) ?? d; }catch(e){ return d; } };
 const lsSet = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} };
-let quiet = new Set(lsGet("kakao.quiet", []));
-let notifyOn = lsGet("kakao.notify", false);
-const isQuiet = name => quiet.has(name);
-function toggleQuiet(name){
-  if(!name) return;
-  if(quiet.has(name)) quiet.delete(name); else quiet.add(name);
-  lsSet("kakao.quiet", [...quiet]);
-  prevRoomsKey=""; render();
-  setStatus(quiet.has(name) ? (" 조용히: "+name) : (" 알림복귀: "+name));
-}
-function setStatus(s){ st.status = s; prevStatus=""; render(); }
-
-// ---- mobile view switching (list <-> conversation) with browser history ----
-function setView(v){
-  view = v;
-  document.body.dataset.view = v;
-  $("back").setAttribute("aria-hidden", v==="convo" ? "false" : "true");
-}
-function enterConvo(){
-  if(isMobile()){
-    setView("convo");
-    history.pushState({view:"convo"}, "");
-  }
-}
-$("back").addEventListener("click", ()=>{
-  if(history.state && history.state.view==="convo") history.back();
-  else setView("list");
-});
-window.addEventListener("popstate", ()=>{ if(isMobile()) setView("list"); });
-
-// ---- rendering: touch DOM only when the relevant slice actually changed ----
-let prevRoomsKey="", prevSelKey="", prevMsgsKey="", prevStatus="", prevTitle="";
-
-function roomRow(r,i){
-  const div = document.createElement("div");
-  div.className = "row" + (r.unread?" unread":"");
-  div.setAttribute("role","option");
-  div.dataset.room = r.name;
-  const mc = r.members_count ? '<span class="mc">('+esc(r.members_count)+')</span>' : '';
-  const mute = isQuiet(r.name) ? '<span class="mute" title="조용히">● </span>' : '';
-  const tm = r.time ? '<span class="tm">'+esc(r.time)+'</span>' : '';
-  const badge = r.unread ? '<span class="badge">'+r.unread+'</span>' : '';
-  div.innerHTML =
-    '<div class="r1"><span class="nm">'+mute+esc(r.name)+' '+mc+'</span>'+tm+'</div>' +
-    '<div class="r2"><span class="pv">'+esc(r.last_message||'')+'</span>'+badge+'</div>';
-  div.onclick = ()=>{ sel=i; openSel(); };
-  return div;
-}
-function renderRooms(){
-  const key = JSON.stringify(st.rooms.map(r=>[r.name,r.unread,r.time,r.last_message,r.members_count,isQuiet(r.name)]));
-  if(key!==prevRoomsKey){
-    prevRoomsKey = key;
-    const list = $("list");
-    list.innerHTML = "";
-    st.rooms.forEach((r,i)=> list.appendChild(roomRow(r,i)));
-    prevSelKey = "";              // force selection repaint
-  }
-  const selKey = sel+"/"+focus;
-  if(selKey!==prevSelKey){
-    prevSelKey = selKey;
-    const list = $("list");
-    [...list.children].forEach((el,i)=>{
-      const on = (i===sel && focus==="list");
-      el.classList.toggle("sel", on);
-      el.setAttribute("aria-selected", on?"true":"false");
-    });
-    const selEl = list.children[sel];
-    if(selEl && focus==="list") selEl.scrollIntoView({block:"nearest"});
-  }
-}
-
-// stable 6-colour palette for sender names (WeeChat-style nick hashing)
-const NICKCOL = ["#7aa2f7","#9ece6a","#e0af68","#bb9af7","#7dcfff","#f7768e"];
-function nickColor(name){
-  let h=0; for(const ch of (name||"")) h=(h*31 + ch.charCodeAt(0))>>>0;
-  return NICKCOL[h % NICKCOL.length];
-}
-// msg + resolved display name (""=omit with ·). Returns a DOM node.
-function msgNode(msg, rank, who, mine){
-  if(msg.kind==="date"){
-    const d=document.createElement("div"); d.className="daterow";
-    d.textContent="──── "+(msg.text||"")+" ────"; return d;
-  }
-  const line=document.createElement("div");
-  line.className="msg irc"+(mine?" me":"");
-  const w=document.createElement("span"); w.className="who";
-  w.textContent = who==="·" ? "·" : who;
-  if(!mine && who && who!=="·") w.style.color = nickColor(who);
-  const sep=document.createElement("span"); sep.className="sep"; sep.textContent="│";
-  const body=document.createElement("span"); body.className="body";
-  const kind=msg.kind||"text";
-  if(kind==="photo"||kind==="video"||kind==="file"){
-    const b=document.createElement("button"); b.className="dlbtn";
-    const label = kind==="file" ? (msg.name||msg.text||"[File]") : msg.text;
-    b.innerHTML='<span class="dlico">⤓</span> '+esc(label);
-    b.title="탭해서 받기";
-    b.onclick=()=>startExport(kind, rank, msg.name||"", b);
-    body.appendChild(b);
-  } else {
-    body.textContent = msg.text||"";
-  }
-  line.appendChild(w); line.appendChild(sep); line.appendChild(body);
-  return line;
-}
-function renderMessages(){
-  const key = JSON.stringify(st.messages);
-  if(key===prevMsgsKey) return;
-  const m = $("msgs");
-  // messages are the *visible* window on the device, so a new message shifts the
-  // window rather than purely appending — follow the tail only if the reader was
-  // already at the bottom; otherwise keep their position and flag new content.
-  const firstLoad = (prevMsgsKey==="");
-  const wasBottom = firstLoad || (m.scrollHeight - m.scrollTop - m.clientHeight) < 48;
-  const keepTop = m.scrollTop;
-  prevMsgsKey = key; prevMsgsLen = st.messages.length;
-  if(!st.messages.length){ m.innerHTML = '<div class="empty">—</div>'; hideNew(); return; }
-  // ranks per downloadable kind (stable across the whole list); resolve the
-  // IRC display name per line (· = same sender as the line above / omitted)
-  const ranks = {};
-  let prevKey = null;
-  const frag = document.createDocumentFragment();
-  st.messages.forEach(msg=>{
-    const kind=(msg&&msg.kind)||"text";
-    if(kind==="date"){ prevKey=null; frag.appendChild(msgNode(msg)); return; }
-    const mine = !!msg.is_mine;
-    const key = mine ? "\u0000me" : (msg.sender || prevKey || "");
-    let who;
-    if(mine) who = (key===prevKey) ? "·" : "나";
-    else who = (msg.sender && key!==prevKey) ? msg.sender : "·";
-    prevKey = key;
-    let rank=0; if(kind==="photo"||kind==="video"||kind==="file"){ rank=ranks[kind]||0; ranks[kind]=rank+1; }
-    frag.appendChild(msgNode(msg, rank, who, mine));
-  });
-  m.replaceChildren(frag);   // note: this resets scrollTop to 0
-  if(wasBottom){ m.scrollTop = m.scrollHeight; hideNew(); }
-  else { m.scrollTop = keepTop; showNew(); }
-}
-let prevMsgsLen = 0;
-function showNew(){ $("newmsg").classList.add("show"); }
-function hideNew(){ $("newmsg").classList.remove("show"); }
-$("newmsg").addEventListener("click", ()=>{ const m=$("msgs"); m.scrollTop=m.scrollHeight; hideNew(); });
-$("msgs").addEventListener("scroll", ()=>{
-  const m=$("msgs");
-  if((m.scrollHeight - m.scrollTop - m.clientHeight) < 48) hideNew();
-});
-
-function render(){
-  renderRooms();
-  const title = st.room ? ("— "+st.room+" —") : "(select a room)";
-  if(title!==prevTitle){ prevTitle=title; $("titletext").textContent = title; }
-  renderMessages();
-  $("inputline").className = "inputline" + (focus==="input" ? "" : " blur");
-  $("loginbanner").hidden = !st.login_needed;
-  const status = " " + (st.status||"");
-  if(status!==prevStatus){ prevStatus=status; $("status").textContent = status; }
-}
-
-const draftKey = name => "kakao.draft:" + name;
-function autogrow(){ input.style.height="auto"; input.style.height=Math.min(input.scrollHeight, window.innerHeight*0.4)+"px"; }
-function saveDraft(){ if(st.room) lsSet(draftKey(st.room), input.value); }
-function loadDraft(name){ input.value = lsGet(draftKey(name), "") || ""; autogrow(); }
-
-function openSel(){
-  const r = st.rooms[sel];
-  if(!r) return;
-  focus = "list";
-  saveDraft();                      // keep the draft for the room we're leaving
-  post("/api/open", {room:r.name});
-  enterConvo();
-  prevMsgsKey = "";                 // new room: force a message repaint
-  loadDraft(r.name);
-  if(!isMobile()){ focus="input"; input.focus(); }
-  render();
-}
-
-// receive a media/file bubble: Save it off the device, then download in-browser
-async function startExport(kind, rank, name, el){
-  if(el.classList.contains("dl-busy")) return;
-  el.classList.add("dl-busy");
-  try{
-    const r = await fetch("/api/export", {method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({kind, rank, name})});
-    if(!r.ok){ el.classList.remove("dl-busy"); return; }
-    const id = (await r.json()).id;
-    for(let i=0;i<90;i++){
-      await new Promise(res=>setTimeout(res, 1000));
-      const s = await fetch("/api/export/"+id);
-      if(!s.ok) continue;
-      const js = await s.json();
-      if(js.ready){ window.location = "/api/download/"+js.token; break; }
-      if(js.error) break;
-    }
-  }catch(e){ /* status reflects worker result via poll */ }
-  el.classList.remove("dl-busy");
-}
-
-async function post(path, body){
-  try{
-    await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify(body||{})});
-  }catch(e){ /* transient */ }
-}
-
-let prevUnread = {};
-function updateTitleAndNotify(){
-  // tab title badge: total unread across non-quiet rooms
-  let total = 0;
-  for(const r of st.rooms){ if(!isQuiet(r.name)) total += (r.unread||0); }
-  document.title = (total>0 ? "("+total+") " : "") + "kakao";
-  // opt-in notification only when the tab is hidden and a non-quiet room grew
-  if(notifyOn && document.hidden && "Notification" in window
-     && Notification.permission==="granted"){
-    for(const r of st.rooms){
-      const before = prevUnread[r.name]||0;
-      if(!isQuiet(r.name) && (r.unread||0) > before){
-        try{ new Notification("kakao — "+r.name,
-             {body:(r.last_message||"새 메시지"), tag:"kakao:"+r.name}); }catch(e){}
-      }
-    }
-  }
-  prevUnread = {}; for(const r of st.rooms) prevUnread[r.name] = r.unread||0;
-}
-async function toggleNotify(){
-  if(!("Notification" in window)){ setStatus(" 이 브라우저는 알림 미지원"); return; }
-  if(!notifyOn){
-    let perm = Notification.permission;
-    if(perm==="default") perm = await Notification.requestPermission();
-    if(perm!=="granted"){ setStatus(" 알림 권한 거부됨"); return; }
-    notifyOn = true;
-  } else { notifyOn = false; }
-  lsSet("kakao.notify", notifyOn);
-  setStatus(notifyOn ? " 알림 켜짐(탭 숨김 시)" : " 알림 꺼짐");
-}
-
-async function poll(){
-  try{
-    const r = await fetch("/api/state?since="+st.seq);
-    if(r.status===204) return;
-    if(r.ok){ st = await r.json(); render(); updateTitleAndNotify(); }
-  }catch(e){ /* keep trying */ }
-}
-
-function sendCurrent(){
-  const t = input.value;
-  if(t.trim()){
-    post("/api/send", {text:t});
-    input.value="";
-    if(st.room) lsSet(draftKey(st.room), "");
-    autogrow();
-  }
-}
-
-// jump to next/prev room (optionally only unread), opening it
-function jumpRoom(dir, unreadOnly){
-  if(!st.rooms.length) return;
-  let i = sel;
-  for(let n=0;n<st.rooms.length;n++){
-    i = (i + dir + st.rooms.length) % st.rooms.length;
-    if(!unreadOnly || (st.rooms[i].unread||0) > 0){ sel=i; openSel(); return; }
-  }
-}
-
-// keyboard — mirror the TUI key map (desktop); input stays usable on mobile
-document.addEventListener("keydown", (e)=>{
-  // overlays capture their own keys first
-  if($("screenovl").classList.contains("show")){ if(e.key==="Escape") closeScreen(); return; }
-  if($("switcher").classList.contains("show")){ switcherKey(e); return; }
-  if($("helpovl").classList.contains("show")){ if(e.key==="Escape"||e.key==="?") closeOverlays(); return; }
-
-  // other text fields (console path boxes) type normally; kbcap handles itself
+const HELP =
+  '<b>화면 클릭</b>  기기 탭 + 키보드가 기기로 (테두리 표시)\n' +
+  '<b>드래그</b>  스와이프\n' +
+  '<b>키보드</b>  글자는 ADBKeyBoard(한글 OK), Backspace·Enter·Tab·방향키·Home/End·PgUp/PgDn·Delete\n' +
+  '<b>Esc</b>  키보드 해제 · <b>Back/Home/Enter</b> 버튼\n' +
+  '<b>⇪ 올리기 / 드래그앤드롭</b>  브라우저 파일을 그 패널 폴더로\n' +
+  '<b>⤓ / 더블클릭</b>  파일을 브라우저로 받기\n' +
+  '<b>↓ 로컬로 / ↑ 안드로이드로</b>  기기 ⇄ VM 복사(덮어쓰지 않음)\n' +
+  '<b>?</b>  이 도움말 · 채팅은 CLI/TUI(<b>kakao tui</b>)에서';
+$("helptext").innerHTML = HELP;
+function openHelp(){ $("helpovl").classList.add("show"); }
+function closeHelp(){ $("helpovl").classList.remove("show"); }
+$("helpbtn").onclick = openHelp;
+$("helpovl").addEventListener("click", e=>{ if(e.target.id==="helpovl") closeHelp(); });
+document.addEventListener("keydown", e=>{
   const t = e.target;
-  if(t!==input && (t.tagName==="INPUT" || t.tagName==="TEXTAREA")) return;
-  // console mode: only the mode/help keys — no chat navigation
-  if(mode==="console"){
-    if(e.ctrlKey||e.metaKey||e.altKey) return;
-    if(e.key==="c"){ e.preventDefault(); setMode("chat"); }
-    else if(e.key==="?"){ e.preventDefault(); openHelp(); }
-    return;
-  }
-  // quick switcher / help work from anywhere
-  if((e.key==="k"||e.key==="K") && (e.ctrlKey||e.metaKey)){ e.preventDefault(); openSwitcher(); return; }
-  // room navigation with Alt works even while typing
-  if(e.altKey && (e.key==="ArrowUp"||e.key==="ArrowDown")){
-    e.preventDefault(); jumpRoom(e.key==="ArrowDown"?1:-1, e.shiftKey); return;
-  }
-
-  if(e.target===input){
-    if(e.key==="Tab"){ e.preventDefault(); focus="list"; input.blur(); render(); }
-    else if(e.key==="Escape"){ focus="list"; input.blur(); render(); if(isMobile()) $("back").click(); }
-    else if(e.key==="Enter" && e.ctrlKey){ e.preventDefault();
-      const s=input.selectionStart, v=input.value;
-      input.value=v.slice(0,s)+"\n"+v.slice(input.selectionEnd);
-      input.selectionStart=input.selectionEnd=s+1; autogrow(); }
-    // ignore Enter while a Korean/IME syllable is still composing — otherwise the
-    // send fires early and the final syllable lingers and gets sent again
-    else if(e.key==="Enter" && !e.shiftKey && !e.isComposing && e.keyCode!==229){
-      e.preventDefault(); sendCurrent(); }
-    // Shift+Enter falls through to the textarea's default newline
-    return;                       // single keys (r, /, ?) must not fire while typing
-  }
-  if(e.key==="/"){ e.preventDefault(); openSwitcher(); return; }
-  if(e.key==="?"){ e.preventDefault(); openHelp(); return; }
-  if(e.key==="Tab"){ e.preventDefault(); focus="input"; input.focus(); render(); }
-  else if(e.key==="ArrowUp"){ e.preventDefault(); sel=Math.max(0,sel-1); render(); }
-  else if(e.key==="ArrowDown"){ e.preventDefault(); sel=Math.min(st.rooms.length-1,sel+1); render(); }
-  else if(e.key==="Enter"){ e.preventDefault(); openSel(); }
-  else if(e.key==="r"){ post("/api/rooms"); }
-  else if(e.key==="m"){ toggleQuiet(st.room); }
-  else if(e.key==="n"){ toggleNotify(); }
-  else if(e.key==="g"){ openScreen(); }
-  else if(e.key==="c"){ e.preventDefault(); setMode("console"); }
+  if(t.tagName==="INPUT" || t.tagName==="TEXTAREA") return;   // path boxes / kbcap
+  if(e.key==="Escape"){ closeHelp(); return; }
+  if(e.key==="?"){ e.preventDefault(); openHelp(); }
 });
-input.addEventListener("focus", ()=>{ if(focus!=="input"){ focus="input"; render(); }});
-input.addEventListener("input", autogrow);
-$("send").addEventListener("click", ()=>{ sendCurrent(); input.focus(); });
+let tempStatus = 0;
+function setStatus(s){ $("status").textContent = " "+s; tempStatus = Date.now(); }
 
-// ---- quick switcher overlay (fuzzy room filter) ----
-let qsel = 0, qlist = [];
-function openSwitcher(){ $("switcher").classList.add("show"); $("qin").value=""; qsel=0; renderSwitcher(); $("qin").focus(); }
-function openHelp(){ $("helptext").innerHTML = HELP; $("helpovl").classList.add("show"); }
-function closeOverlays(){ $("switcher").classList.remove("show"); $("helpovl").classList.remove("show"); }
-function fuzzy(q, name){
-  q=q.toLowerCase(); name=name.toLowerCase(); let i=0;
-  for(const ch of name){ if(ch===q[i]) i++; if(i>=q.length) return true; }
-  return q.length===0;
-}
-function renderSwitcher(){
-  const q = $("qin").value.trim();
-  qlist = st.rooms.map((r,idx)=>({r,idx})).filter(o=> q==="" || fuzzy(q,o.r.name));
-  if(qsel>=qlist.length) qsel=Math.max(0,qlist.length-1);
-  const res = $("qres"); res.innerHTML="";
-  qlist.forEach((o,j)=>{
-    const d=document.createElement("div");
-    d.className="row"+(j===qsel?" sel":"");
-    d.setAttribute("role","option");
-    const mc=o.r.members_count?' <span class="mc">('+esc(o.r.members_count)+')</span>':'';
-    d.innerHTML='<span class="nm">'+esc(o.r.name)+mc+'</span>';
-    d.onclick=()=>{ sel=o.idx; closeOverlays(); openSel(); };
-    res.appendChild(d);
-  });
-}
-$("qin").addEventListener("input", ()=>{ qsel=0; renderSwitcher(); });
-function switcherKey(e){
-  if(e.key==="Escape"){ e.preventDefault(); closeOverlays(); }
-  else if(e.key==="ArrowDown"){ e.preventDefault(); qsel=Math.min(qlist.length-1,qsel+1); renderSwitcher(); }
-  else if(e.key==="ArrowUp"){ e.preventDefault(); qsel=Math.max(0,qsel-1); renderSwitcher(); }
-  else if(e.key==="Enter"){ e.preventDefault(); const o=qlist[qsel]; if(o){ sel=o.idx; closeOverlays(); openSel(); } }
-}
-
-// file attach: + opens the picker, selection uploads to the open room
-$("attach").addEventListener("click", ()=>{
-  if(!st.room){ st.status = " 먼저 방을 선택하세요"; prevStatus=""; render(); return; }
-  $("file").click();
-});
-async function uploadFile(f){
-  if(!f || !st.room) return;
-  const name = f.name || ("paste-"+Date.now()+(f.type==="image/png"?".png":""));
-  setStatus(" attaching " + name + " …");
+// ---- server status line (worker errors etc.) ----
+let stSeq = -1;
+async function pollState(){
   try{
-    await fetch("/api/sendfile?name=" + encodeURIComponent(name), {method:"POST", body:f});
-  }catch(err){ /* status via poll */ }
+    const r = await fetch("/api/state?since="+stSeq);
+    if(r.status===200){ const j = await r.json(); stSeq = j.seq;
+      if(Date.now()-tempStatus > 4000) $("status").textContent = " "+(j.status||""); }
+  }catch(e){}
 }
-$("file").addEventListener("change", async (e)=>{ await uploadFile(e.target.files[0]); e.target.value=""; });
 
-// paste an image into the input, or drag-and-drop a file onto the conversation
-input.addEventListener("paste", (e)=>{
-  const items = e.clipboardData && e.clipboardData.items;
-  if(!items) return;
-  for(const it of items){
-    if(it.kind==="file"){ const f=it.getAsFile(); if(f){ e.preventDefault(); uploadFile(f); return; } }
-  }
-});
-const pane = document.querySelector(".pane");
-["dragenter","dragover"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); $("inputline").classList.add("drop"); }));
-["dragleave","drop"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); $("inputline").classList.remove("drop"); }));
-pane.addEventListener("drop", e=>{ const f=e.dataTransfer && e.dataTransfer.files[0]; if(f) uploadFile(f); });
-
-// ---- live device screen view/control (overlay for re-login + console center) ----
-// One <img id=scr> and one frame loop; the element is re-parented between the
-// overlay and the console so frames are never fetched twice.
-let frameLoop=false, fpsCount=0, fpsT=Date.now(), scrSeq=0;
-const screenWanted = () => $("screenovl").classList.contains("show") || mode==="console";
+// ---- live screen: PNG frames (fallback renderer) ----
+let frameLoop=false, fpsCount=0, fpsT=Date.now(), scrSeq=0, pngWanted=true;
 function startFrames(){ if(!frameLoop){ frameLoop=true; scrSeq=0; pollFrame(); } }
-function openScreen(){
-  if(mode==="console"){ $("kbcap").focus({preventScroll:true}); return; }
-  document.querySelector("#screenovl .scrwrap").appendChild($("scr"));
-  $("screenovl").classList.add("show"); startFrames();
-}
-function closeScreen(){ $("screenovl").classList.remove("show"); }
-// poll the tiny /info (keeps the viewer alive) and only fetch a new frame when the
-// capture seq changed — avoids re-downloading identical frames (mobile bandwidth)
+// poll the tiny /info (keeps the viewer alive) and fetch a frame only when it changed
 function pollFrame(){
-  if(!screenWanted()){ frameLoop=false; return; }
+  if(!pngWanted){ frameLoop=false; return; }
   fetch("/api/screen/info").then(r=>r.json()).then(j=>{
-    if(!screenWanted()){ frameLoop=false; return; }
+    if(!pngWanted){ frameLoop=false; return; }
     if(j.seq && j.seq !== scrSeq){
       scrSeq = j.seq;
       const nx = new Image();
       nx.onload = ()=>{
-        if(!screenWanted()) return;
+        if(!pngWanted) return;
         $("scr").src = nx.src;
         fpsCount++; const now=Date.now();
-        if(now-fpsT >= 1000){ $("fps").textContent = $("cfps").textContent = fpsCount+" fps";
-          fpsCount=0; fpsT=now; }
+        if(now-fpsT >= 1000){ $("cfps").textContent = fpsCount+" fps"; fpsCount=0; fpsT=now; }
       };
       nx.src = "/api/screen/frame?seq=" + j.seq;
     }
     setTimeout(pollFrame, 250);
-  }).catch(()=>{ if(screenWanted()) setTimeout(pollFrame, 600); else frameLoop=false; });
+  }).catch(()=>{ if(pngWanted) setTimeout(pollFrame, 600); else frameLoop=false; });
 }
 async function scrPost(path, body){
   try{ await fetch("/api/screen/"+path, {method:"POST",
@@ -1488,7 +768,7 @@ const scr = $("scr");
 let pd = null;
 scr.addEventListener("pointerdown", e=>{ e.preventDefault(); pd={x:e.offsetX,y:e.offsetY,t:Date.now()};
   try{ scr.setPointerCapture(e.pointerId); }catch(_){}
-  if(mode==="console") $("kbcap").focus({preventScroll:true}); });  // keyboard → device
+  $("kbcap").focus({preventScroll:true}); });  // clicking the screen routes the keyboard to the device
 scr.addEventListener("pointerup", e=>{
   if(!pd) return;
   const ew=scr.clientWidth, eh=scr.clientHeight;
@@ -1500,41 +780,7 @@ scr.addEventListener("pointerup", e=>{
   }
   pd=null;
 });
-$("scrbtn").onclick = openScreen;
-$("scrbtn2").onclick = openScreen;
-$("loginopen").onclick = openScreen;
-$("scrclose").onclick = closeScreen;
-$("kbback").onclick = ()=> scrPost("key",{name:"back"});
-$("kbhome").onclick = ()=> scrPost("key",{name:"home"});
-$("kbenter").onclick = ()=> scrPost("key",{name:"enter"});
-$("scrsend").onclick = ()=>{ const t=$("scrtext").value; if(t){ scrPost("text",{text:t}); $("scrtext").value=""; } };
-$("scrtext").addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.isComposing && e.keyCode!==229){ e.preventDefault(); $("scrsend").click(); } e.stopPropagation(); });
-document.querySelectorAll(".ovl").forEach(o=> o.addEventListener("click", e=>{ if(e.target===o){ if(o.id==="screenovl") closeScreen(); else closeOverlays(); } }));
 
-// ================= console mode: device screen + file managers =================
-let consoleOK = true;
-function setMode(m, save=true){
-  if(m==="console" && !consoleOK){ setStatus(" 콘솔 비활성 — 비로컬 바인드는 --allow-screen 필요"); return; }
-  mode = m;
-  document.body.dataset.mode = m;
-  $("m-chat").classList.toggle("on", m==="chat");
-  $("m-console").classList.toggle("on", m==="console");
-  $("m-chat").setAttribute("aria-selected", m==="chat"); $("m-console").setAttribute("aria-selected", m==="console");
-  $("mconsole").textContent = m==="console" ? "💬 채팅" : "⌨ 콘솔";
-  if(save) lsSet("kakao.mode", m);
-  history.replaceState(history.state, "", m==="console" ? "#console" : location.pathname);
-  if(m==="console"){
-    closeScreen();
-    $("conwrap").appendChild($("scr"));
-    startFrames();
-    if(!fp.android.loaded) loadPane("android", fp.android.path);
-    if(!fp.local.loaded) loadPane("local", fp.local.path);
-    setStatus(" 콘솔 — 열려 있는 동안 채팅 갱신은 멈춥니다");
-  }
-}
-$("m-chat").onclick = ()=> setMode("chat");
-$("m-console").onclick = ()=> setMode("console");
-$("mconsole").onclick = ()=> setMode(mode==="console" ? "chat" : "console");
 $("ckback").onclick = ()=> scrPost("key",{name:"back"});
 $("ckhome").onclick = ()=> scrPost("key",{name:"home"});
 $("ckenter").onclick = ()=> scrPost("key",{name:"enter"});
@@ -1715,30 +961,27 @@ kbcap.addEventListener("compositionend", ()=>{
 kbcap.addEventListener("focus", ()=> $("conwrap").classList.add("kbon"));
 kbcap.addEventListener("blur", ()=>{ kbFlush(); $("conwrap").classList.remove("kbon"); });
 
-// initial mode: #console deep-link or last used; console needs the screen API
-fetch("/api/screen/info").then(r=>r.json()).then(j=>{
-  consoleOK = !!j.enabled;
-  if(!consoleOK){
-    $("m-console").disabled = true; $("mconsole").disabled = true;
-    $("m-console").title = "비활성 — 비로컬 바인드는 --allow-screen 필요";
-  }
-  const want = location.hash==="#console" ? "console" : lsGet("kakao.mode", "chat");
-  if(want==="console" && consoleOK) setMode("console", false);
-}).catch(()=>{});
 
-// keep the input line visible when the mobile keyboard opens (visualViewport)
-function fitViewport(){
-  const vv = window.visualViewport;
-  if(vv) document.body.style.height = vv.height + "px";
-}
+// ---- startup: the console needs the screen API (local bind or --allow-screen) ----
+fetch("/api/screen/info").then(r=>r.json()).then(j=>{
+  if(!j.enabled){
+    $("conwrap").innerHTML = '<div class="disabled-note">콘솔 비활성 — 비로컬 바인드에서는 ' +
+      '<b>--allow-screen</b> 으로 켜야 합니다(계정 전체 원격 조작이므로 SSH 터널/Tailscale 권장).</div>';
+    $("vmode").textContent = "OFF"; return;
+  }
+  startFrames();
+  loadPane("android", fp.android.path);
+  loadPane("local", fp.local.path);
+}).catch(()=>{});
+pollState(); setInterval(pollState, 1500);
+
+// keep the layout inside the visible area when a mobile keyboard opens
+function fitViewport(){ const vv = window.visualViewport; if(vv) document.body.style.height = vv.height + "px"; }
 if(window.visualViewport){
   window.visualViewport.addEventListener("resize", fitViewport);
   window.visualViewport.addEventListener("scroll", fitViewport);
   fitViewport();
 }
-
-poll();
-setInterval(poll, 1000);
 </script>
 </body></html>
 """

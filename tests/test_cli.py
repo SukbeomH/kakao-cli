@@ -87,94 +87,6 @@ def _wait_room(url, want, tries=50):
     raise AssertionError("room never opened in state")
 
 
-def test_webui_serves_page_and_api_and_send():
-    sys.path.insert(0, "src")
-    from kakao_cli import webui  # noqa: E402
-
-    worker = _StubWorker()
-    httpd = webui.serve(worker, "127.0.0.1", 0)
-    port = httpd.server_address[1]
-    import threading
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{port}"
-    try:
-        # GET / -> HTML page with the shared hint text
-        status, body = _http("GET", base + "/")
-        assert status == 200 and "kakao-cli" in body and "Tab" in body
-        # GET /api/state -> JSON snapshot
-        status, body = _http("GET", base + "/api/state")
-        assert status == 200
-        snap = _json.loads(body)
-        assert set(("seq", "rooms", "room", "messages", "status")) <= set(snap)
-        # send before a room is open -> 400
-        status, _ = _http("POST", base + "/api/send", {"text": "안녕"})
-        assert status == 400
-        # simulate the worker opening a room, then send Korean
-        worker.events.put(("opened", "me"))
-        _wait_room(base, "me")
-        status, _ = _http("POST", base + "/api/send", {"text": "안녕 한글"})
-        assert status == 200
-        assert ("send", "안녕 한글") in worker.puts
-    finally:
-        httpd.shutdown()
-
-
-def _http_bytes(url, data: bytes):
-    import urllib.request
-    req = urllib.request.Request(url, data=data, method="POST",
-                                 headers={"Content-Type": "application/octet-stream"})
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, r.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8")
-
-
-def test_webui_sendfile_streams_and_sanitizes():
-    import os
-    import threading
-    import urllib.parse
-    sys.path.insert(0, "src")
-    from kakao_cli import webui  # noqa: E402
-
-    worker = _StubWorker()
-    httpd = webui.serve(worker, "127.0.0.1", 0)
-    port = httpd.server_address[1]
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{port}"
-    try:
-        # no room open -> 400
-        status, _ = _http_bytes(base + "/api/sendfile?name=a.zip", b"PK\x03\x04data")
-        assert status == 400
-        # open a room, then upload with a path-traversal name
-        worker.events.put(("opened", "me"))
-        _wait_room(base, "me")
-        payload = b"PK\x03\x04" + b"x" * 2048
-        qname = urllib.parse.quote("../../etc/pa ss\"wd.zip")
-        status, body = _http_bytes(base + f"/api/sendfile?name={qname}", payload)
-        assert status == 200
-        # command queued with a temp path; basename is sanitized to the leaf
-        cmd = next(c for c in worker.puts if c[0] == "sendfile")
-        path = cmd[1]
-        leaf = os.path.basename(path)
-        assert "/" not in leaf and ".." not in leaf
-        assert leaf.endswith("pa_ss_wd.zip")
-        with open(path, "rb") as f:
-            assert f.read() == payload   # streamed to disk intact
-        os.unlink(path)
-    finally:
-        httpd.shutdown()
-
-
-def test_webui_safe_name():
-    sys.path.insert(0, "src")
-    from kakao_cli.webui import _safe_name
-    assert _safe_name("../../x.png") == "x.png"
-    assert _safe_name("a b.pdf") == "a_b.pdf"
-    assert _safe_name("사진.jpg") == "사진.jpg"     # Hangul preserved
-    assert _safe_name("") == "file"
-
-
 # --- live device screen (stage C) ---
 import struct
 
@@ -182,6 +94,36 @@ import struct
 def _png(w, h):
     return (b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", w, h)
             + b"\x08\x06\x00\x00\x00" + b"\x00" * 8)
+
+
+def test_webui_console_page_and_state(tmp_path):
+    """The web UI is console-only: no chat endpoints, a status-only /api/state."""
+    import threading
+    sys.path.insert(0, "src")
+    from kakao_cli import webui
+    worker = _StubWorker()
+    httpd = webui.serve(worker, "127.0.0.1", 0, fs_root=str(tmp_path))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        st, body = _http("GET", base + "/")
+        assert st == 200 and "kakao-cli" in body and 'id="conwrap"' in body
+        assert 'id="list"' not in body and "/api/send" not in body     # no chat UI
+        st, body = _http("GET", base + "/api/state")
+        snap = _json.loads(body)
+        assert st == 200 and set(snap) == {"seq", "status"}
+        worker.events.put(("status", "hello"))
+        for _ in range(50):
+            snap = _json.loads(_http("GET", base + "/api/state")[1])
+            if snap["status"] == "hello":
+                break
+            time.sleep(0.05)
+        assert snap["status"] == "hello"
+        assert _http("GET", base + "/api/state?since=%d" % snap["seq"])[0] == 204
+        for path in ("/api/open", "/api/send", "/api/export", "/api/rooms", "/api/sendfile"):
+            assert _http("POST", base + path, {"room": "me", "text": "x"})[0] == 404
+    finally:
+        httpd.shutdown()
 
 
 def test_screen_view_to_device():
@@ -196,6 +138,8 @@ def test_screen_view_to_device():
     assert view_to_device(200, 0, 800, 640, 1600, 2560) == (0, 0)
     # degenerate inputs are safe
     assert view_to_device(10, 10, 0, 0, 1600, 2560) == (0, 0)
+    # same click on the scaled video frame (max_size 1280 → 800×1280)
+    assert view_to_device(200, 320, 400, 640, 800, 1280) == (400, 640)
 
 
 def test_messages_detailed_sender_mine_date():
@@ -307,56 +251,6 @@ def test_webui_screen_control(tmp_path):
         except urllib.error.HTTPError as e:
             code = e.code
         assert code == 415
-    finally:
-        httpd.shutdown()
-
-
-def test_webui_export_and_download(tmp_path):
-    import os
-    import threading
-    import time
-    sys.path.insert(0, "src")
-    from kakao_cli import webui  # noqa: E402
-
-    worker = _StubWorker()
-    httpd = webui.serve(worker, "127.0.0.1", 0)
-    port = httpd.server_address[1]
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{port}"
-    try:
-        # export before a room is open -> 400
-        status, _ = _http("POST", base + "/api/export", {"kind": "photo", "rank": 0})
-        assert status == 400
-        worker.events.put(("opened", "me"))
-        _wait_room(base, "me")
-        # request an export; worker gets the command, UI gets an id
-        status, body = _http("POST", base + "/api/export",
-                             {"kind": "file", "rank": 0, "name": "doc.zip"})
-        assert status == 202
-        xid = _json.loads(body)["id"]
-        assert ("export", xid, "file", 0, "doc.zip") in worker.puts
-        # pending until the worker reports a result
-        _c, b = _http("GET", base + "/api/export/" + xid)
-        assert _json.loads(b)["ready"] is False
-        # simulate the worker pulling the file, then poll -> ready + download
-        blob = tmp_path / "pulled.zip"
-        blob.write_bytes(b"PK\x03\x04RECEIVED")
-        worker.events.put(("export_result", {"id": xid, "path": str(blob),
-                                             "name": "doc.zip", "mime": "application/zip"}))
-        token = None
-        for _ in range(50):
-            _c, b = _http("GET", base + "/api/export/" + xid)
-            js = _json.loads(b)
-            if js.get("ready"):
-                token = js["token"]; break
-            time.sleep(0.05)
-        assert token, "export never became ready"
-        # download streams the exact bytes
-        import urllib.request
-        with urllib.request.urlopen(base + "/api/download/" + token, timeout=5) as r:
-            assert r.status == 200
-            assert r.read() == b"PK\x03\x04RECEIVED"
-            assert "attachment" in r.headers.get("Content-Disposition", "")
     finally:
         httpd.shutdown()
 

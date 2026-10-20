@@ -1,4 +1,4 @@
-// Console-mode e2e (desktop): switch to 콘솔, frame streams into the center,
+// Console e2e (desktop): the console-only page streams the device into the center,
 // android pane lists /sdcard/ → Download, push a local file up, pull it back
 // down, then click the device's message box on the streamed screen and type
 // Korean through the hidden keyboard capture (composition events).
@@ -35,12 +35,9 @@ async function waitJob(p){
   const errs=[]; p.on('pageerror', e=>errs.push(e.message));
   try {
     await p.goto(BASE, {waitUntil:'domcontentloaded'});
-    await p.waitForFunction(()=>document.querySelectorAll('#list .row').length>0, null, {timeout:60000});
-    // 1) switch to console with the 'c' key
-    await p.keyboard.press('c');
-    await p.waitForFunction(()=>document.body.dataset.mode==='console', null, {timeout:10000});
-    const chatHidden = await p.evaluate(()=>getComputedStyle(document.querySelector('.main')).display==='none');
-    if (!chatHidden) die('chat still visible in console mode');
+    // 1) the web UI is console-only: no chat list / mode switch at all
+    if (await p.evaluate(()=>!!document.getElementById('list') || !!document.getElementById('m-chat')))
+      die('chat UI still present');
     // 2) the single <img> is re-parented into the console center and streams
     await p.waitForFunction(()=>{ const i=document.getElementById('scr');
       return i.parentElement.id==='conwrap' && i.naturalWidth>0; }, null, {timeout:60000});
