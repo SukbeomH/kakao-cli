@@ -24,10 +24,7 @@ cleanup(){ ssh "$VM" "tmux kill-session -t $SESS 2>/dev/null; tmux kill-session 
 trap cleanup EXIT
 
 echo "1) deploy"
-scp -q "$ROOT/src/kakao_cli/screen.py" "$ROOT/src/kakao_cli/worker.py" \
-       "$ROOT/src/kakao_cli/webui.py" "$ROOT/src/kakao_cli/adb.py" \
-       "$ROOT/src/kakao_cli/cli.py" "$ROOT/src/kakao_cli/fs.py" \
-       "$ROOT/src/kakao_cli/driver.py" "$VM:$REMOTE/src/kakao_cli/" || fail "scp failed"
+scp -q "$ROOT"/src/kakao_cli/*.py "$VM:$REMOTE/src/kakao_cli/" || fail "scp failed"
 scp -q "$ROOT/tests/webui_screen_check.py" "$VM:/tmp/webui_screen_check.py" || fail "scp check failed"
 
 echo "2) start webui --allow-screen on $PORT"
@@ -46,10 +43,11 @@ echo "3) device-side checks (frame/tap/change/fps/idle)"
 ssh "$VM" "cd $REMOTE && BASE=http://127.0.0.1:$PORT SER=$SER python3 /tmp/webui_screen_check.py" \
   || fail "device-side screen checks failed"
 
+# PNG renderer pinned: this script covers the screencap path (video: e2e_console.sh)
 echo "4) browser overlay (desktop)"
-node "$ROOT/tests/webui_screen.js" "http://$VM_IP:$PORT" || fail "desktop overlay failed"
+node "$ROOT/tests/webui_screen.js" "http://$VM_IP:$PORT/?video=png" || fail "desktop overlay failed"
 echo "5) browser overlay (mobile)"
-MOBILE=1 node "$ROOT/tests/webui_screen.js" "http://$VM_IP:$PORT" || fail "mobile overlay failed"
+MOBILE=1 node "$ROOT/tests/webui_screen.js" "http://$VM_IP:$PORT/?video=png" || fail "mobile overlay failed"
 
 echo "6) security: non-local bind without --allow-screen blocks the screen API"
 ssh "$VM" "tmux kill-session -t ${SESS}N 2>/dev/null; tmux new-session -d -s ${SESS}N \

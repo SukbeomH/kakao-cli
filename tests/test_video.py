@@ -56,17 +56,20 @@ def test_init_segment_and_fragment_boxes():
     j = f1.index(b"trun")
     off = struct.unpack(">i", f1[j + 12:j + 16])[0]
     assert off == moof_size + 8 and f1[off:off + 9] == b"\x00\x00\x00\x05\x65\x88\x84\x00\x10"
-    t1 = struct.unpack(">Q", f1[f1.index(b"tfdt") + 8:f1.index(b"tfdt") + 16])[0]
-    t2 = struct.unpack(">Q", f2[f2.index(b"tfdt") + 8:f2.index(b"tfdt") + 16])[0]
-    assert t1 == 0 and t2 == 33_000
+    tfdt = lambda f: struct.unpack(">Q", f[f.index(b"tfdt") + 8:f.index(b"tfdt") + 16])[0]
+    dur = lambda f: struct.unpack(">I", f[f.index(b"trun") + 16:f.index(b"trun") + 20])[0]
+    # contiguous timeline: each sample starts where the previous ended; a sample
+    # lasts as long as the gap since the previous frame (clamped)
+    assert tfdt(f1) == 0 and dur(f1) == fmp4.DEFAULT_DUR
+    assert tfdt(f2) == fmp4.DEFAULT_DUR and dur(f2) == 33_000
     # sample flags: sync vs non-sync
     assert f1[j + 24:j + 28] == struct.pack(">I", 0x02000000)
     k = f2.index(b"trun")
     assert f2[k + 24:k + 28] == struct.pack(">I", 0x01010000)
-    # pts going backwards never makes decode time go backwards
-    f3 = m.frame(500_000, False, DELTA)
-    t3 = struct.unpack(">Q", f3[f3.index(b"tfdt") + 8:f3.index(b"tfdt") + 16])[0]
-    assert t3 > t2
+    f3 = m.frame(9_000_000, False, DELTA)            # long idle gap: clamped, no jump
+    assert tfdt(f3) == tfdt(f2) + dur(f2) and dur(f3) == fmp4.MAX_DUR
+    f4 = m.frame(500_000, False, DELTA)              # pts going backwards: still monotonic
+    assert tfdt(f4) == tfdt(f3) + dur(f3) and dur(f4) == fmp4.MIN_DUR
 
 
 # ------------------------------------------------------------ geometry
@@ -252,14 +255,18 @@ def test_consolelock_parse_and_check():
 
 
 def test_cli_refuses_ui_commands_while_console_busy(monkeypatch, capsys):
-    from kakao_cli import cli
+    from kakao_cli import cli, tui
     dev = _Dev("1700000000 vm 1 virtual\n==\n1700000002")
     monkeypatch.setattr(cli, "_dev", lambda args: dev)
-    rc = cli.main(["rooms", "--json"])
-    out = capsys.readouterr()
-    payload = json.loads(out.out or out.err)
-    assert rc == ConsoleBusy.exit_code == 7
-    assert payload["ok"] is False and payload["error"] == "console_busy" and payload["mode"] == "virtual"
+    monkeypatch.setattr(tui, "run", lambda **kw: (_ for _ in ()).throw(AssertionError("tui started")))
+    for argv in (["rooms", "--json"], ["read", "me", "--json"], ["send", "me", "x", "--yes", "--json"],
+                 ["tui", "--json"]):
+        rc = cli.main(argv)
+        out = capsys.readouterr()
+        payload = json.loads(out.out or out.err)
+        assert rc == ConsoleBusy.exit_code == 7, argv
+        assert payload["ok"] is False and payload["error"] == "console_busy" and payload["mode"] == "virtual"
+    assert not any(c.startswith("input ") for c in dev.cmds)          # nothing touched the UI
 
 
 # ------------------------------------------------- endpoints + routing
@@ -343,11 +350,10 @@ def test_video_stream_endpoint_fmp4_and_annexb():
                 assert m1[:9] == struct.pack(">BQ", 1, 20) and m1[9:] == KEY
                 assert m2[:9] == struct.pack(">BQ", 0, 30)
             r.close(); c.close()
-            for _ in range(100):                     # disconnect noticed on the next write
-                br.on_video(("frame", 40, False, DELTA))
+            for _ in range(100):                     # closed tab noticed without any new frame
                 if not hub.subs:
                     break
-                time.sleep(0.02)
+                time.sleep(0.05)
             assert not hub.subs
         st, j = _post(port, "/api/video/mode", {"mode": "nope"})
         assert st == 400

@@ -9,6 +9,9 @@ const { chromium } = require('playwright-core');
 const BASE = process.argv[2];
 const FL = process.env.FILE_LOCAL, FA = process.env.FILE_ANDROID, OUT = process.env.OUT || '/tmp';
 const MOBILE = !!process.env.MOBILE;
+// privacy: blur the device screen body (names/messages) but keep header/tab bars
+const MASK_CSS = '.scrwrap::after{content:"";position:absolute;left:0;right:0;top:13%;bottom:11%;' +
+  'backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);pointer-events:none}';
 function die(m){ console.error('FAIL: '+m); process.exit(1); }
 const lastJob = p => p.evaluate(()=>{ const j=[...document.querySelectorAll('#jobs .job')].pop();
   return j ? {cls:j.className, txt:j.textContent} : null; });
@@ -75,7 +78,7 @@ const hasRow = (p, w, n) => p.waitForFunction(([w,n])=>[...document.querySelecto
       console.log('download(device): '+d2.suggestedFilename());
     }
     if (errs.length) die('page errors: '+errs.join(' | '));
-    if (process.env.SHOT) await p.screenshot({path: process.env.SHOT});
+    if (process.env.SHOT) { await p.addStyleTag({content: MASK_CSS}); await p.screenshot({path: process.env.SHOT}); }
     console.log('PASS'); await b.close(); process.exit(0);
   } catch(e){ if(errs.length) console.error('page errors: '+errs.join(' | ')); await b.close().catch(()=>{}); die(e.message); }
 })();

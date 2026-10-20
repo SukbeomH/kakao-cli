@@ -15,7 +15,9 @@ import json
 import os
 import queue
 import re
+import select
 import shutil
+import socket
 import struct
 import tempfile
 import threading
@@ -475,8 +477,12 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self.end_headers()
                 while True:
                     try:
-                        ev = sub.q.get(timeout=10)
+                        ev = sub.q.get(timeout=2)
                     except queue.Empty:
+                        # a static screen produces no frames, so a closed tab is
+                        # never noticed by a write — check the socket instead
+                        if _peer_closed(self.connection):
+                            break
                         continue
                     if ev[0] == "session":
                         wh, ready = (ev[1], ev[2]), False
@@ -663,6 +669,15 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
     return Handler
 
 
+def _peer_closed(sock) -> bool:
+    """True if the client has closed its end (readable + EOF on a peek)."""
+    try:
+        r, _w, _x = select.select([sock], [], [], 0)
+        return bool(r) and sock.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
+
+
 def _link_unique(part: str, directory: str, name: str) -> str:
     """Give the finished .part its final name without ever overwriting: hard-link
     to a free name (link fails if it exists → try the next -N), then drop .part."""
@@ -841,7 +856,8 @@ PAGE = r"""<!doctype html>
   .job.running{color:var(--unread)} .job.done{color:var(--me)} .job.error{color:#f7768e}
   .center{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;padding:6px}
   .scrbar{display:flex;gap:6px;align-items:center;padding:4px 0;flex:0 0 auto}
-  .scrbar button{color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:6px 10px;min-height:36px}
+  .scrbar button{color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:6px 10px;min-height:36px;
+    white-space:nowrap}
   .scrbar button:hover{background:var(--line)}
   .scrbar .fps{margin-left:auto;color:var(--dim);font-size:12px;white-space:nowrap}
   .kbhint{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -873,9 +889,12 @@ PAGE = r"""<!doctype html>
   .panel .help b{color:var(--accent)}
   @media (max-width:720px){
     #header .hint .long{display:none}
-    .console{flex-direction:column}
-    .side{flex:1 1 45%;max-width:none;min-width:0;border-right:none}
-    .center{flex:0 0 55%;order:-1}
+    /* phone: the device screen fills the viewport (→ a portrait virtual display
+       with the phone layout); the file managers sit below it — scroll down */
+    .console{flex-direction:column;overflow-y:auto}
+    .side{flex:0 0 auto;height:85vh;height:85dvh;max-width:none;min-width:0;border-right:none}
+    .center{flex:0 0 auto;order:-1;height:calc(100vh - 64px);
+      height:calc(100dvh - 64px - var(--safe-t) - var(--safe-b))}
     .scrbar button{min-height:40px}
   }
 </style></head>
@@ -1347,7 +1366,7 @@ function wcSink(){
       dec = new VideoDecoder({
         output: f=>{ if(cv.width!==f.displayWidth || cv.height!==f.displayHeight){
                        cv.width=f.displayWidth; cv.height=f.displayHeight; }
-                     ctx.drawImage(f, 0, 0); f.close(); vframe(); },
+                     ctx.drawImage(f, 0, 0); f.close(); cv.dataset.frames = (+cv.dataset.frames || 0) + 1; vframe(); },
         error: e=>{ fallback("wc", e.message); }});
       dec.configure({codec: m.codec, optimizeForLatency: true});
       waitKey = true;

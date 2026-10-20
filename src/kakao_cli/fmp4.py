@@ -8,7 +8,8 @@ from __future__ import annotations
 import struct
 
 TIMESCALE = 1_000_000          # scrcpy pts are microseconds
-DEFAULT_DUR = 33_333           # sample duration hint (MSE 'sequence' mode plays back-to-back)
+DEFAULT_DUR = 33_333           # duration of the first sample
+MIN_DUR, MAX_DUR = 1_000, 100_000
 
 
 def split_annexb(data: bytes) -> list[bytes]:
@@ -115,30 +116,36 @@ def fragment(seq: int, base_time: int, sample: bytes, key: bool, duration: int =
 
 
 class Muxer:
-    """Stateful per-viewer muxer: init when SPS/PPS/size are known, then fragments."""
+    """Stateful per-viewer muxer: init when SPS/PPS/size are known, then fragments.
+
+    The media timeline is kept *contiguous*: each sample starts where the previous
+    one ended. Browsers treat a decode-time jump larger than twice the previous
+    sample's duration as a discontinuity and then drop every frame until the next
+    keyframe — with real pts and a screen that only updates on change, that would
+    freeze the picture. A sample's duration is the gap since the previous frame
+    (clamped), so playback still advances at roughly wall-clock speed."""
 
     def __init__(self):
         self.seq = 0
-        self.t0 = None
-        self.last = 0
+        self.prev_pts = None
+        self.next_dts = 0
 
     def init(self, config: bytes, width: int, height: int) -> bytes | None:
         sps, pps = sps_pps(config)
         if not sps or not pps:
             return None
-        self.seq, self.t0, self.last = 0, None, 0
+        self.seq, self.prev_pts, self.next_dts = 0, None, 0
         return init_segment(sps, pps, width, height)
 
     def frame(self, pts: int, key: bool, data: bytes) -> bytes | None:
         sample = to_avcc(data)
         if not sample:
             return None
-        if self.t0 is None:
-            self.t0 = pts
-        t = max(pts - self.t0, self.last)
-        self.last = t + 1
+        dur = DEFAULT_DUR if self.prev_pts is None else max(MIN_DUR, min(MAX_DUR, pts - self.prev_pts))
+        self.prev_pts = pts
+        t, self.next_dts = self.next_dts, self.next_dts + dur
         self.seq += 1
-        return fragment(self.seq, t, sample, key)
+        return fragment(self.seq, t, sample, key, dur)
 
 
 def parse_boxes(data: bytes, depth: int = 0, containers=(b"moov", b"trak", b"mdia", b"minf",

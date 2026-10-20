@@ -10,6 +10,8 @@ const BASE = process.argv[2];
 const PUSH = process.env.PUSH_NAME;
 const IX = +process.env.INPUT_X, IY = +process.env.INPUT_Y;
 const KBD = process.env.KBD_TEXT || 'kbd테스트';
+const MASK_CSS = '.scrwrap::after{content:"";position:absolute;left:0;right:0;top:13%;bottom:11%;' +
+  'backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);pointer-events:none}';   // privacy
 function die(m){ console.error('FAIL: '+m); process.exit(1); }
 const rowNames = (p, w) => p.evaluate(w =>
   [...document.querySelectorAll('#flist-'+w+' .frow .fn')].map(e=>e.textContent.replace(/^\S+\s/,'')), w);
@@ -82,6 +84,7 @@ async function waitJob(p){
       console.log('typed via keyboard capture');
     }
     if (errs.length) die('page errors: '+errs.join(' | '));
+    await p.addStyleTag({content: MASK_CSS});
     await p.screenshot({path: process.env.SHOT || '/tmp/webui_console.png'});
     console.log('PASS'); await b.close(); process.exit(0);
   } catch(e){ if(errs.length) console.error('page errors: '+errs.join(' | ')); await b.close().catch(()=>{}); die(e.message); }
