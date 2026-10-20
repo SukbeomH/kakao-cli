@@ -1,4 +1,6 @@
 import json
+import os
+import urllib.parse
 import subprocess
 import sys
 
@@ -493,5 +495,142 @@ def test_console_keycode_allowlist(tmp_path):
         assert ("key", 67) in worker.puts
         assert _http("POST", base + "/api/screen/key", {"code": 26})[0] == 400   # POWER: not allowed
         assert _http("POST", base + "/api/screen/key", {"code": True})[0] == 400
+    finally:
+        httpd.shutdown()
+
+
+# --- console A-1/A-2: browser <-> VM/device transfers ---
+import http.client
+import io
+
+
+def _req(base, method, path, body=b"", headers=None):
+    host, port = base.split("//", 1)[1].split(":")
+    c = http.client.HTTPConnection(host, int(port), timeout=10)
+    c.request(method, path, body=body, headers=headers or {})
+    r = c.getresponse()
+    data = r.read()
+    out = (r.status, data, dict(r.getheaders()))
+    c.close()
+    return out
+
+
+UP = {"X-Kakao-Op": "upload", "Content-Type": "application/octet-stream"}
+
+
+def test_fs_host_and_names():
+    sys.path.insert(0, "src")
+    from kakao_cli.fs import host_allowed, clean_upload_name, content_disposition
+    assert host_allowed("192.168.0.30:8808") and host_allowed("127.0.0.1")
+    assert host_allowed("[::1]:8800") and host_allowed("localhost:8800")
+    assert not host_allowed("evil.example:8808")            # DNS-rebinding name
+    assert host_allowed("box.tail1234.ts.net", ["box.tail1234.ts.net"])
+    assert not host_allowed("")
+    assert clean_upload_name("../../etc/보고서 최종.pdf") == "보고서 최종.pdf"
+    assert clean_upload_name("a\\b\\c.txt") == "c.txt"
+    assert clean_upload_name("..") is None and clean_upload_name("") is None
+    cd = content_disposition("보고서 최종.pdf")
+    assert "filename*=UTF-8''%EB%B3%B4" in cd and cd.startswith("attachment;")
+
+
+def test_upload_and_download_local(tmp_path):
+    import hashlib
+    httpd, _w, base = _console_server(tmp_path, fake=_FakeDev({}))
+    try:
+        body = os.urandom(300_000)
+        q = "/api/fs/upload?dir=&name=" + urllib.parse.quote("보고서 최종.bin")
+        st, b, _ = _req(base, "POST", q, body, UP)
+        assert st == 201 and _json.loads(b)["name"] == "보고서 최종.bin"
+        assert (tmp_path / "보고서 최종.bin").read_bytes() == body
+        st, b, _ = _req(base, "POST", q, b"second", UP)              # same name → -1
+        assert st == 201 and _json.loads(b)["name"] == "보고서 최종-1.bin"
+        assert not [p for p in os.listdir(tmp_path) if p.endswith(".part")]
+        # download streams the exact bytes with safe headers
+        st, data, h = _req(base, "GET", "/api/fs/local/get?path=" + urllib.parse.quote("보고서 최종.bin"))
+        assert st == 200 and hashlib.sha256(data).digest() == hashlib.sha256(body).digest()
+        assert h["Content-Type"] == "application/octet-stream"
+        assert h["X-Content-Type-Options"] == "nosniff"
+        assert "filename*=UTF-8''" in h["Content-Disposition"]
+        assert _req(base, "GET", "/api/fs/local/get?path=../x")[0] == 404
+    finally:
+        httpd.shutdown()
+
+
+def test_upload_rejections(tmp_path):
+    import socket
+    sys.path.insert(0, "src")
+    from kakao_cli import webui
+    import threading, types
+    worker = _StubWorker(); worker.d = types.SimpleNamespace(dev=_FakeDev({}))
+    httpd = webui.serve(worker, "127.0.0.1", 0, screen_enabled=True, fs_root=str(tmp_path),
+                        max_upload=1000, disk_free=lambda d: 10 ** 12)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    q = "/api/fs/upload?dir=&name=a.txt"
+    try:
+        assert _req(base, "POST", q, b"x", {"Content-Type": "application/octet-stream"})[0] == 403
+        assert _req(base, "POST", q, b"x", {**UP, "Origin": "http://evil.example"})[0] == 403
+        assert _req(base, "POST", q, b"x", {**UP, "Host": "evil.example"})[0] == 403
+        assert _req(base, "POST", q, b"x", {**UP, "Content-Type": "multipart/form-data; b=1"})[0] == 415
+        assert _req(base, "POST", q, b"x" * 1001, UP)[0] == 413
+        assert _req(base, "POST", "/api/fs/upload?dir=../&name=a.txt", b"x", UP)[0] == 404
+        assert _req(base, "POST", "/api/fs/upload?dir=&name=..", b"x", UP)[0] == 400
+        # interrupted body: promised 500 bytes, sent 100, then hung up
+        s = socket.create_connection(("127.0.0.1", httpd.server_address[1]))
+        s.sendall(("POST %s HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Kakao-Op: upload\r\n"
+                   "Content-Type: application/octet-stream\r\nContent-Length: 500\r\n\r\n" % q).encode()
+                  + b"y" * 100)
+        s.shutdown(socket.SHUT_WR); s.recv(4096); s.close()
+        time.sleep(0.2)
+        assert not (tmp_path / "a.txt").exists()
+        assert not [p for p in os.listdir(tmp_path) if p.endswith(".part")]
+    finally:
+        httpd.shutdown()
+    # no free space → 507
+    httpd = webui.serve(worker, "127.0.0.1", 0, screen_enabled=True, fs_root=str(tmp_path),
+                        disk_free=lambda d: 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        assert _req(base, "POST", q, b"x", UP)[0] == 507
+    finally:
+        httpd.shutdown()
+
+
+class _FakeDev2(_FakeDev):
+    def shell(self, cmd):
+        if cmd.startswith("stat -c '%F|%s'"):
+            path = cmd.split("'")[3] if cmd.count("'") >= 4 else ""
+            for p, b in self.files.items():
+                if p == path:
+                    return "regular file|%d" % len(b)
+            return ""
+        return super().shell(cmd)
+
+    def open_exec_out(self, cmd):
+        path = cmd.split("'", 1)[1].rsplit("'", 1)[0]
+        return types_ns(stdout=io.BytesIO(self.files[path]), kill=lambda: None)
+
+
+def types_ns(**kw):
+    import types
+    return types.SimpleNamespace(**kw)
+
+
+def test_android_upload_and_download(tmp_path):
+    fake = _FakeDev2({"/sdcard/Download/pic.jpg": b"\xff\xd8\xffJPEGDATA"})
+    httpd, _w, base = _console_server(tmp_path, fake=fake)
+    try:
+        st, b, _ = _req(base, "POST", "/api/fs/upload?target=android&dir=/sdcard/Download/&name=up.bin",
+                        b"PAYLOAD", UP)
+        assert st == 202
+        j = _wait_job(base, _json.loads(b)["id"])
+        assert j["state"] == "done" and j["dst"] == "/sdcard/Download/up.bin"
+        assert fake.files["/sdcard/Download/up.bin"] == b"PAYLOAD"
+        assert fake.pushed and not os.path.exists(fake.pushed[-1][0])   # staging removed
+        st, data, h = _req(base, "GET", "/api/fs/android/get?path=/sdcard/Download/pic.jpg")
+        assert st == 200 and data == b"\xff\xd8\xffJPEGDATA" and h["Content-Length"] == "11"
+        assert _req(base, "GET", "/api/fs/android/get?path=/sdcard/nope")[0] == 404
+        assert _req(base, "GET", "/api/fs/android/get?path=rel")[0] == 400
     finally:
         httpd.shutdown()

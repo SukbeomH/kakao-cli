@@ -22,8 +22,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export NODE_PATH="${NODE_PATH:-/home/agent/kakao-tools/node_modules}"
 export CHROME="${CHROME:-/home/agent/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome}"
 
-cleanup(){ ssh "$VM" "adb -s $SER shell am broadcast -a ADB_CLEAR_TEXT >/dev/null 2>&1; \
-  adb -s $SER shell rm -f '/sdcard/Download/$PUSH' >/dev/null 2>&1; \
+UPL="up-$TS.bin"; UPA="dev-$TS.bin"; WORK="$(mktemp -d)"
+cleanup(){ rm -rf "$WORK"; ssh "$VM" "adb -s $SER shell am broadcast -a ADB_CLEAR_TEXT >/dev/null 2>&1; \
+  adb -s $SER shell rm -f '/sdcard/Download/$PUSH' '/sdcard/Download/$UPA' >/dev/null 2>&1; \
   tmux kill-session -t $SESS 2>/dev/null; rm -rf '$ROOTDIR'" 2>/dev/null; }
 fail(){ echo "FAIL: $*" >&2; cleanup; exit 1; }
 trap cleanup EXIT
@@ -100,5 +101,26 @@ for i in $(seq 1 8); do
 done
 [ "$got" = 1 ] || fail "keyboard text not found in the message box"
 echo "   keyboard OK ('$KBD' typed into the message box, not sent)"
+
+echo "6) transfers: browser⇄VM and browser⇄device (sha256)"
+head -c 6000000 /dev/urandom > "$WORK/$UPL"; head -c 1500000 /dev/urandom > "$WORK/$UPA"
+mkdir -p "$WORK/out"
+FILE_LOCAL="$WORK/$UPL" FILE_ANDROID="$WORK/$UPA" OUT="$WORK/out" SHOT="${SHOT2:-/tmp/webui_transfer.png}" \
+  node "$ROOT/tests/webui_transfer.js" "http://$VM_IP:$PORT" || fail "browser transfer driver failed"
+h(){ sha256sum "$1" | cut -d' ' -f1; }
+hl=$(h "$WORK/$UPL"); ha=$(h "$WORK/$UPA")
+[ "$(ssh "$VM" "sha256sum '$ROOTDIR/$UPL'" | cut -d' ' -f1)" = "$hl" ] || fail "VM copy hash mismatch"
+[ "$(h "$WORK/out/dl-local.bin")" = "$hl" ] || fail "VM download hash mismatch"
+[ "$(ssh "$VM" "adb -s $SER shell sha256sum '/sdcard/Download/$UPA'" | cut -d' ' -f1)" = "$ha" ] \
+  || fail "device copy hash mismatch"
+[ "$(h "$WORK/out/dl-android.bin")" = "$ha" ] || fail "device download hash mismatch"
+echo "   sha256 OK: upload→VM, VM→download, drop→device, device→download"
+ssh "$VM" "ls '$ROOTDIR'" | grep -q '\.part$' && fail ".part left behind"
+echo "6m) mobile: upload + download in the stacked console"
+rm -f "$WORK/out/dl-local.bin"; head -c 300000 /dev/urandom > "$WORK/m-$TS.bin"
+MOBILE=1 FILE_LOCAL="$WORK/m-$TS.bin" OUT="$WORK/out" SHOT="${SHOT3:-/tmp/webui_transfer_m.png}" \
+  node "$ROOT/tests/webui_transfer.js" "http://$VM_IP:$PORT" || fail "mobile transfer failed"
+[ "$(h "$WORK/out/dl-local.bin")" = "$(h "$WORK/m-$TS.bin")" ] || fail "mobile round-trip hash mismatch"
+echo "   mobile OK"
 
 echo "PASS: console e2e (stream + push/pull disk-verified + keyboard device-verified)"

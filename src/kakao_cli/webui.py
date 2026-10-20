@@ -17,6 +17,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -27,7 +28,11 @@ from .adb import connect
 from .worker import Worker
 from .screen import ScreenBuffer, view_to_device
 from .fs import (LocalRoot, shq, parse_stat_lines, android_list_cmd,
-                 android_parent, unique_name)
+                 android_parent, unique_name, content_disposition, clean_upload_name,
+                 host_allowed)
+
+DEFAULT_MAX_UPLOAD = 2 << 30          # 2 GiB (--max-upload)
+UPLOAD_HEADROOM = 64 << 20            # keep this much free after an upload
 
 # Android keycodes the console keyboard may forward (everything printable goes
 # through ADBKeyBoard text instead). Anything else is rejected.
@@ -175,7 +180,9 @@ def _safe_name(raw: str) -> str:
 
 
 def make_handler(worker: Worker, state: State, tmpdir: str,
-                 screen: ScreenBuffer, screen_enabled: bool, fsroot: LocalRoot):
+                 screen: ScreenBuffer, screen_enabled: bool, fsroot: LocalRoot,
+                 max_upload: int = DEFAULT_MAX_UPLOAD, allow_hosts=(), disk_free=None):
+    disk_free = disk_free or (lambda d: shutil.disk_usage(d).free)
     # console file transfers run in their own threads (a large push must not
     # freeze the worker's captures/taps); adb's server serializes transports
     jobs: dict[str, dict] = {}
@@ -217,10 +224,7 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 name = better
         return {"name": name, "dst": fsroot.rel(os.path.join(real_dir, name))}
 
-    def push_job(src_rel, dst_dir):
-        real = fsroot.resolve(src_rel)
-        if not real or not os.path.isfile(real):
-            raise ValueError("files only (local source not found)")
+    def _push_file(real, dst_dir):
         d = dev()
         base = dst_dir if dst_dir.endswith("/") else dst_dir + "/"
         name = unique_name(os.path.basename(real),
@@ -230,11 +234,37 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 % shq("file://" + base + name))
         return {"name": name, "dst": base + name}
 
+    def push_job(src_rel, dst_dir):
+        real = fsroot.resolve(src_rel)
+        if not real or not os.path.isfile(real):
+            raise ValueError("files only (local source not found)")
+        return _push_file(real, dst_dir)
+
+    def staged_push_job(staged, dst_dir):
+        try:
+            return _push_file(staged, dst_dir)
+        finally:                                   # staging is temporary
+            try:
+                os.unlink(staged); os.rmdir(os.path.dirname(staged))
+            except OSError:
+                pass
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "kakao-cli-webui"
 
         def log_message(self, *a):  # silence per-request logging (1s polling)
             pass
+
+        def _host_ok(self) -> bool:
+            return host_allowed(self.headers.get("Host", ""), allow_hosts)
+
+        def _console_get_ok(self) -> bool:
+            """Gate for console GETs (frames, listings, downloads)."""
+            if not screen_enabled:
+                self._json(403, {"error": "console disabled"}); return False
+            if not self._host_ok():
+                self._json(403, {"error": "host not allowed"}); return False
+            return True
 
         def _csrf_ok(self) -> bool:
             # control is state-changing: require same-origin (if an Origin is sent)
@@ -304,8 +334,8 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._json(200, {"enabled": screen_enabled, "seq": seq,
                                  "w": w, "h": h, "has_frame": bool(frame)})
             elif path == "/api/screen/frame":
-                if not screen_enabled:
-                    return self._json(403, {"error": "screen disabled"})
+                if not self._console_get_ok():
+                    return
                 screen.touch()      # mark a viewer so the worker captures
                 end = time.time() + 3.0
                 while not screen.get()[1] and time.time() < end:
@@ -325,10 +355,17 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._json(404, {"error": "not found"})
 
         def _fs_get(self, path):
-            if not screen_enabled:
-                return self._json(403, {"error": "console disabled"})
+            if not self._console_get_ok():
+                return
             q = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             arg = (q.get("path") or [""])[0]
+            if path == "/api/fs/local/get":
+                real = fsroot.resolve(arg)
+                if not real or not os.path.isfile(real):
+                    return self._json(404, {"error": "not found or outside root"})
+                return self._serve_file(real, os.path.basename(real), "application/octet-stream")
+            if path == "/api/fs/android/get":
+                return self._android_get(arg)
             if path == "/api/fs/android":
                 p = arg or "/sdcard/"
                 if not p.startswith("/"):
@@ -359,19 +396,22 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
             else:
                 self._json(404, {"error": "not found"})
 
-        def _serve_file(self, path, name, mime):
-            from urllib.parse import quote
-            with open(path, "rb") as f:
-                body = f.read()
+        def _serve_file(self, path, name, mime, attachment=True):
+            """Stream a file in 1 MiB chunks (never load it whole)."""
+            size = os.path.getsize(path)
             self.send_response(200)
             self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(body)))
-            ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "_")
-            self.send_header("Content-Disposition",
-                             "attachment; filename=\"%s\"; filename*=UTF-8''%s"
-                             % (ascii_name, quote(name)))
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", content_disposition(name))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
 
         def do_POST(self):
             if self.path == "/api/open":
@@ -432,13 +472,118 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._screen_control()
             elif self.path in ("/api/fs/pull", "/api/fs/push"):
                 self._fs_transfer()
+            elif self.path.split("?", 1)[0] == "/api/fs/upload":
+                self._fs_upload()
             else:
                 self._json(404, {"error": "not found"})
+
+        def _android_get(self, p):
+            if not p.startswith("/"):
+                return self._json(400, {"error": "absolute path required"})
+            d = dev()
+            if d is None:
+                return self._json(503, {"error": "no device"})
+            info = (d.shell("stat -c '%%F|%%s' %s 2>/dev/null" % shq(p)) or "").strip()
+            ftype, _, size = info.partition("|")
+            if ftype not in ("regular file", "regular empty file") or not size.isdigit():
+                return self._json(404, {"error": "not a regular file"})
+            proc = d.open_exec_out("cat " + shq(p))
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", size)
+                self.send_header("Content-Disposition",
+                                 content_disposition(p.rstrip("/").rsplit("/", 1)[-1]))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                while True:                      # stream straight from the device
+                    chunk = proc.stdout.read(1 << 20)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            finally:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        def _fs_upload(self):
+            """Raw-body upload (one file per request) into the local pane, or —
+            with target=android — staged then pushed to the device."""
+            if not screen_enabled:
+                return self._json(403, {"error": "console disabled"})
+            if not self._host_ok():
+                return self._json(403, {"error": "host not allowed"})
+            if not self._csrf_ok():
+                return self._json(403, {"error": "cross-origin blocked"})
+            # a custom header forces a CORS preflight (we never answer OPTIONS
+            # permissively), so a cross-site form/fetch can't reach this
+            if self.headers.get("X-Kakao-Op") != "upload":
+                return self._json(403, {"error": "missing X-Kakao-Op: upload"})
+            ctype = (self.headers.get("Content-Type") or "").lower()
+            if ctype.startswith(("multipart/", "application/x-www-form-urlencoded")):
+                return self._json(415, {"error": "raw body only"})
+            q = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            name = clean_upload_name((q.get("name") or [""])[0])
+            if not name:
+                return self._json(400, {"error": "bad name"})
+            try:
+                n = int(self.headers.get("Content-Length") or "")
+            except ValueError:
+                return self._json(411, {"error": "Content-Length required"})
+            if n < 0:
+                return self._json(400, {"error": "bad length"})
+            if n > max_upload:
+                return self._json(413, {"error": "too large (max %d bytes)" % max_upload})
+            to_android = (q.get("target") or [""])[0] == "android"
+            dir_arg = (q.get("dir") or [""])[0]
+            if to_android:
+                if not dir_arg.startswith("/"):
+                    return self._json(400, {"error": "android dir must be absolute"})
+                if dev() is None:
+                    return self._json(503, {"error": "no device"})
+                target_dir = tempfile.mkdtemp(prefix="stage-", dir=tmpdir)
+            else:
+                target_dir = fsroot.resolve(dir_arg)
+                if not target_dir or not os.path.isdir(target_dir):
+                    return self._json(404, {"error": "dir not found or outside root"})
+            if disk_free(target_dir) - n < UPLOAD_HEADROOM:
+                return self._json(507, {"error": "not enough free space"})
+            fd, part = tempfile.mkstemp(dir=target_dir, prefix=".up-", suffix=".part")
+            try:
+                remaining = n
+                with os.fdopen(fd, "wb") as f:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(1 << 20, remaining))
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                if remaining:
+                    os.unlink(part)
+                    return self._json(400, {"error": "incomplete upload"})
+                final = _link_unique(part, target_dir, name)   # atomic, never clobbers
+            except BaseException:
+                try:
+                    os.unlink(part)
+                except OSError:
+                    pass
+                raise
+            if to_android:
+                import uuid
+                jid = uuid.uuid4().hex
+                job_set(jid, state="running", op="push", src=final)
+                run_job(jid, staged_push_job, os.path.join(target_dir, final), dir_arg)
+                return self._json(202, {"id": jid, "name": final})
+            self._json(201, {"name": final, "path": fsroot.rel(os.path.join(target_dir, final))})
 
         def _guard(self) -> bool:
             """Shared gate for every console control: enabled + JSON + same-origin."""
             if not screen_enabled:
                 self._json(403, {"error": "console disabled"}); return False
+            if not self._host_ok():
+                self._json(403, {"error": "host not allowed"}); return False
             if "application/json" not in (self.headers.get("Content-Type") or ""):
                 self._json(415, {"error": "json only"}); return False
             if not self._csrf_ok():
@@ -511,6 +656,21 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
     return Handler
 
 
+def _link_unique(part: str, directory: str, name: str) -> str:
+    """Give the finished .part its final name without ever overwriting: hard-link
+    to a free name (link fails if it exists → try the next -N), then drop .part."""
+    taken = lambda n: os.path.lexists(os.path.join(directory, n))
+    for _ in range(1000):
+        final = unique_name(name, taken)
+        try:
+            os.link(part, os.path.join(directory, final))
+        except FileExistsError:
+            continue                      # lost a race; pick the next free name
+        os.unlink(part)
+        return final
+    raise OSError("no free name for " + name)
+
+
 def _num(v, default=0):
     try:
         return float(v)
@@ -520,7 +680,8 @@ def _num(v, default=0):
 
 def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
           screen: ScreenBuffer = None, screen_enabled: bool = True,
-          fs_root: str = "~") -> ThreadingHTTPServer:
+          fs_root: str = "~", max_upload: int = DEFAULT_MAX_UPLOAD,
+          allow_hosts=(), disk_free=None) -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
     if tmpdir is None:
@@ -530,7 +691,8 @@ def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
     threading.Thread(target=_pump, args=(worker, state), daemon=True).start()
     httpd = ThreadingHTTPServer(
         (host, port), make_handler(worker, state, tmpdir, screen, screen_enabled,
-                                   LocalRoot(fs_root)))
+                                   LocalRoot(fs_root), max_upload=max_upload,
+                                   allow_hosts=tuple(allow_hosts), disk_free=disk_free))
     httpd.daemon_threads = True
     return httpd
 
@@ -540,7 +702,7 @@ def _is_local(host: str) -> bool:
 
 
 def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_screen=False,
-        fs_root="~"):
+        fs_root="~", max_upload=DEFAULT_MAX_UPLOAD, allow_hosts=()):
     dev = connect(serial, addr, adb=adb)
     tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     screen = ScreenBuffer()
@@ -550,7 +712,8 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
     worker = Worker(dev, export_dir=tmpdir, screen=screen)
     worker.start()
     httpd = serve(worker, host, port, tmpdir=tmpdir, screen=screen,
-                  screen_enabled=screen_enabled, fs_root=fs_root)
+                  screen_enabled=screen_enabled, fs_root=fs_root,
+                  max_upload=max_upload, allow_hosts=allow_hosts)
     shown = host if host not in ("0.0.0.0", "") else "<vm-ip>"
     print(f"kakao-cli webui on http://{shown}:{port}  (Ctrl-C to stop)")
     print(f"  screen view / console (files): {'ON' if screen_enabled else 'OFF'}"
@@ -738,6 +901,12 @@ PAGE = r"""<!doctype html>
     padding:3px 10px;white-space:nowrap}
   .ffoot button:disabled{color:var(--dim);cursor:default}
   .ferr{color:#f7768e;padding:6px 10px;font-size:12px;white-space:normal}
+  .fhead .fbtn{color:var(--accent);border:1px solid var(--line);border-radius:3px;padding:1px 8px;
+    white-space:nowrap;font-size:12px}
+  .frow .fdl{color:var(--accent);padding:0 4px;visibility:hidden}
+  .frow:hover .fdl,.frow.sel .fdl{visibility:visible}
+  @media (hover:none){ .frow .fdl{visibility:visible} }
+  .fpane.drop{outline:2px dashed var(--accent);outline-offset:-3px}
   .jobs{flex:0 0 auto;max-height:22%;overflow-y:auto;font-size:12px;padding:2px 8px}
   .job{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .job.running{color:var(--unread)} .job.done{color:var(--me)} .job.error{color:#f7768e}
@@ -800,7 +969,9 @@ PAGE = r"""<!doctype html>
     <div class="side">
       <div class="fpane" id="fp-android">
         <div class="fhead"><b>안드로이드</b>
-          <input id="fpath-android" spellcheck="false" autocomplete="off" aria-label="안드로이드 경로"></div>
+          <input id="fpath-android" spellcheck="false" autocomplete="off" aria-label="안드로이드 경로">
+          <button class="fbtn" id="up-android" title="브라우저 파일을 이 기기 폴더로 (드래그앤드롭도 됨)">⇪ 올리기</button>
+          <input type="file" id="upf-android" multiple hidden></div>
         <div class="flist" id="flist-android" role="listbox" aria-label="안드로이드 파일"></div>
         <div class="ffoot"><span class="fsel" id="fsel-android">파일 선택</span>
           <button id="pull" disabled title="선택 파일을 아래 로컬 폴더로 복사">↓ 로컬로 복사</button></div>
@@ -808,7 +979,9 @@ PAGE = r"""<!doctype html>
       <div class="fpane" id="fp-local">
         <div class="fhead"><b>로컬(VM)</b>
           <input id="fpath-local" spellcheck="false" autocomplete="off" aria-label="로컬 경로"
-                 placeholder="(루트)"></div>
+                 placeholder="(루트)">
+          <button class="fbtn" id="up-local" title="브라우저 파일을 이 VM 폴더로 (드래그앤드롭도 됨)">⇪ 올리기</button>
+          <input type="file" id="upf-local" multiple hidden></div>
         <div class="flist" id="flist-local" role="listbox" aria-label="로컬 파일"></div>
         <div class="ffoot"><span class="fsel" id="fsel-local">파일 선택</span>
           <button id="push" disabled title="선택 파일을 위 안드로이드 폴더로 복사">↑ 안드로이드로 복사</button></div>
@@ -1406,11 +1579,16 @@ function renderPane(which, err){
     d.className = "frow " + (nav ? "dir" : "file");
     d.setAttribute("role","option"); d.dataset.path = it.path;
     d.innerHTML = '<span class="fn">'+(nav ? (it.type==="link"?"↪ ":"▸ ") : "· ")+esc(it.name)+
-      '</span><span class="fs">'+(nav ? "" : hsize(it.size))+'</span>';
+      '</span><span class="fs">'+(nav ? "" : hsize(it.size))+'</span>'+
+      (nav ? '' : '<button class="fdl" title="브라우저로 받기">⤓</button>');
     d.onclick = ()=>{
       if(nav) loadPane(which, which==="android" ? it.path+"/" : it.path);
       else { P.sel = it; renderSel(which); }
     };
+    if(!nav){
+      d.querySelector(".fdl").onclick = (e)=>{ e.stopPropagation(); download(which, it); };
+      d.ondblclick = ()=> download(which, it);
+    }
     list.appendChild(d);
   }
   if(!P.items.length && !err){ const e=document.createElement("div"); e.className="empty"; e.textContent="(비어 있음)"; list.appendChild(e); }
@@ -1438,6 +1616,16 @@ function renderJobs(){
     '<div class="job '+j.state+'">'+({running:"⋯",done:"✓",error:"✗"}[j.state]||"")+" "+
     esc(j.label)+(j.note ? " — "+esc(j.note) : "")+'</div>').join("");
 }
+async function watchJob(id, job, reloadWhich, reloadPath){
+  for(let i=0;i<600;i++){                       // up to ~7 min for big files
+    await new Promise(res=>setTimeout(res, 700));
+    let s; try{ s = await (await fetch("/api/fs/job/"+id)).json(); }catch(e){ continue; }
+    if(s.state==="done"){ job.state="done"; job.note="→ "+s.dst; renderJobs();
+      loadPane(reloadWhich, reloadPath); return; }
+    if(s.state==="error"){ job.state="error"; job.note=s.error; renderJobs(); return; }
+  }
+  job.state="error"; job.note="시간 초과"; renderJobs();
+}
 async function transfer(op){
   const src = op==="pull" ? fp.android.sel : fp.local.sel;
   if(!src) return;
@@ -1451,15 +1639,46 @@ async function transfer(op){
     j = await r.json();
   }catch(e){ job.state="error"; job.note="연결 실패"; renderJobs(); return; }
   if(!r.ok){ job.state="error"; job.note=j.error||("HTTP "+r.status); renderJobs(); return; }
-  for(let i=0;i<600;i++){                       // up to ~7 min for big files
-    await new Promise(res=>setTimeout(res, 700));
-    let s; try{ s = await (await fetch("/api/fs/job/"+j.id)).json(); }catch(e){ continue; }
-    if(s.state==="done"){ job.state="done"; job.note="→ "+s.dst; renderJobs();
-      loadPane(op==="pull" ? "local" : "android", dst); return; }
-    if(s.state==="error"){ job.state="error"; job.note=s.error; renderJobs(); return; }
-  }
-  job.state="error"; job.note="시간 초과"; renderJobs();
+  await watchJob(j.id, job, op==="pull" ? "local" : "android", dst);
 }
+// ---- browser ⇄ VM/device: uploads (XHR for progress) and downloads ----
+function uploadOne(which, f){
+  return new Promise(resolve=>{
+    const P = fp[which], dir = P.path || "";
+    const job = {state:"running", label:"⇪ "+f.name+(which==="android"?" → 기기":" → VM"), note:"0%"};
+    jobs.push(job); renderJobs();
+    const q = (which==="android" ? "target=android&" : "") + "dir="+encodeURIComponent(dir) +
+              "&name="+encodeURIComponent(f.name);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/fs/upload?"+q);
+    xhr.setRequestHeader("X-Kakao-Op", "upload");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = e=>{ if(e.lengthComputable){ job.note=Math.floor(e.loaded*100/e.total)+"%"; renderJobs(); } };
+    xhr.onload = async ()=>{
+      let j = {}; try{ j = JSON.parse(xhr.responseText); }catch(_){}
+      if(xhr.status===201){ job.state="done"; job.note="→ "+j.path; renderJobs(); loadPane("local", dir); }
+      else if(xhr.status===202){ job.note="기기로 복사 중…"; renderJobs(); await watchJob(j.id, job, "android", dir); }
+      else { job.state="error"; job.note = j.error || ("HTTP "+xhr.status); renderJobs(); }
+      resolve();
+    };
+    xhr.onerror = ()=>{ job.state="error"; job.note="연결 실패"; renderJobs(); resolve(); };
+    xhr.send(f);
+  });
+}
+async function uploadFiles(which, files){ for(const f of files) await uploadOne(which, f); }
+function download(which, it){
+  const a = document.createElement("a");
+  a.href = "/api/fs/"+which+"/get?path="+encodeURIComponent(it.path);
+  a.download = it.name; document.body.appendChild(a); a.click(); a.remove();
+}
+["android","local"].forEach(w=>{
+  $("up-"+w).onclick = ()=> $("upf-"+w).click();
+  $("upf-"+w).addEventListener("change", e=>{ const fs=[...e.target.files]; e.target.value=""; uploadFiles(w, fs); });
+  const pane = $("fp-"+w);
+  ["dragenter","dragover"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); pane.classList.add("drop"); }));
+  ["dragleave","drop"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); pane.classList.remove("drop"); }));
+  pane.addEventListener("drop", e=>{ const fs=[...(e.dataTransfer?e.dataTransfer.files:[])]; if(fs.length) uploadFiles(w, fs); });
+});
 $("pull").onclick = ()=> transfer("pull");
 $("push").onclick = ()=> transfer("push");
 

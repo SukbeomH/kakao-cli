@@ -108,3 +108,44 @@ def unique_name(name: str, exists) -> str:
     while exists(f"{stem}-{i}{ext}"):
         i += 1
     return f"{stem}-{i}{ext}"
+
+
+def content_disposition(name: str) -> str:
+    """attachment header with an ASCII fallback + RFC 5987 UTF-8 name (Hangul)."""
+    from urllib.parse import quote
+    ascii_name = name.encode("ascii", "replace").decode("ascii")
+    ascii_name = "".join(c if c.isprintable() and c not in '"\\' else "_" for c in ascii_name)
+    return "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (ascii_name, quote(name, safe=""))
+
+
+def clean_upload_name(raw: str) -> str | None:
+    """Browser filename → a safe single path component, or None. Keeps the
+    original name (Hangul, spaces) — only strips path parts and control chars."""
+    from urllib.parse import unquote
+    name = unquote(raw or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(c for c in name if c.isprintable() and c != "\x00").strip()
+    if name in ("", ".", ".."):
+        return None
+    while len(name.encode("utf-8")) > 240:          # stay under NAME_MAX with room for -N
+        name = name[:-1]
+    return name
+
+
+def host_allowed(host_header: str, allow_hosts=()) -> bool:
+    """DNS-rebinding guard: accept IP-literal hosts (they can't rebind),
+    localhost, and explicitly allowed names (e.g. a `tailscale serve` name)."""
+    import ipaddress
+    h = (host_header or "").strip().lower()
+    if not h:
+        return False
+    if h.startswith("["):                               # [::1]:8800
+        h = h[1:h.find("]")] if "]" in h else h[1:]
+    elif h.count(":") == 1:                              # name:port / v4:port
+        h = h.rsplit(":", 1)[0]
+    if h in ("localhost",) or h in {a.lower() for a in allow_hosts}:
+        return True
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        return False

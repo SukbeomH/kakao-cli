@@ -119,6 +119,13 @@ class Device:
             raise AdbUnavailable("screencap failed")
         return p.stdout
 
+    def open_exec_out(self, cmd: str) -> subprocess.Popen:
+        """Stream a device command's raw stdout (binary-clean, e.g. `cat FILE`).
+        Caller reads .stdout and must kill()/wait() the process."""
+        return subprocess.Popen([self.adb, "-s", self.serial, "exec-out", cmd],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL)
+
     def swipe(self, x1: int, y1: int, x2: int, y2: int, ms: int = 200) -> None:
         self.shell(f"input swipe {int(x1)} {int(y1)} {int(x2)} {int(y2)} {int(ms)}")
 

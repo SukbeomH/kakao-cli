@@ -131,7 +131,8 @@ def cmd_webui(args) -> int:
     from . import webui
     webui.run(serial=args.serial, addr=args.addr, adb=args.adb,
               host=args.host, port=args.port, allow_screen=args.allow_screen,
-              fs_root=args.fs_root)
+              fs_root=args.fs_root, max_upload=args.max_upload,
+              allow_hosts=args.allow_host or ())
     return 0
 
 
@@ -166,6 +167,17 @@ _DESC = {
     "tui": "Interactive terminal UI: browse rooms, read live, and send.",
     "webui": "Serve the TUI's UI in a browser (stdlib HTTP, localhost by default).",
 }
+
+
+def _size(v: str) -> int:
+    """'2G' / '500M' / '1048576' → bytes."""
+    v = str(v).strip().upper()
+    mult = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}.get(v[-1:], 1)
+    num = v[:-1] if v[-1:] in "KMGT" else v
+    try:
+        return int(float(num) * mult)
+    except ValueError:
+        raise argparse.ArgumentTypeError("bad size: " + v)
 
 
 def _common(p):
@@ -237,6 +249,11 @@ def build_parser():
             sp.add_argument("--allow-screen", action="store_true",
                             help="enable the live screen view/control on a non-local --host "
                                  "(full-account remote control; off by default when not on 127.0.0.1)")
+            sp.add_argument("--max-upload", type=_size, default="2G", metavar="SIZE",
+                            help="largest browser upload into the console (default: 2G)")
+            sp.add_argument("--allow-host", action="append", metavar="NAME",
+                            help="extra Host name accepted by console APIs besides IP "
+                                 "literals/localhost (e.g. a tailscale serve name); repeatable")
             sp.add_argument("--fs-root", default="~", metavar="PATH",
                             help="local file-manager root in the console (default: ~); "
                                  "the pane cannot leave it")
