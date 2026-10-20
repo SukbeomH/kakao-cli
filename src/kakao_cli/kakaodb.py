@@ -25,12 +25,32 @@ PREFIXES = ('', '', '12', '24', '18', '30', '36', '12', '48', '7', '35',
             'dorothy', 'sally', 'bran', 'extr.ursra', 'veil')
 PASSWORD = bytes.fromhex('1608096f02172b0821210a1003030706')
 IV = bytes.fromhex('0f080100194725dc15f517e0e1150c35')
-# 실측 type 1/2/3과 UI 비교로 확인한 종류만. 나머지는 추측하지 않는다.
-KINDS = {1: 'text', 2: 'photo', 3: 'video'}
+# 26.8.3 APK ChatMessageType.kt(tg9), classes10.dex의 enum + 실기 관측값.
+# 앱의 코드는 복사하지 않고 확인한 형식 값만 독립적으로 매핑한다.
+KINDS = {0: 'system', 1: 'text', 2: 'photo', 3: 'video', 12: 'sticker',
+         18: 'file', 20: 'animated_sticker', 25: 'animated_sticker_ex',
+         26: 'reply', 27: 'multi_photo', 71: 'leverage', 72: 'alimtalk'}
+DELETED_FLAG = 0x4000
+BLINDED_FLAG = 0x8000
+SECRET_FLAG = 0x10000000
 
 
 class DBUnavailable(KakaoError):
     code = 'db_unavailable'
+
+
+def message_type(raw):
+    """실측 타입과 1차 enum의 플래그만 해석. 원본 type은 호출자가 그대로 보존한다."""
+    if type(raw) is not int:
+        raise DBUnavailable('DB 메시지 타입 형식이 변경되었습니다')
+    deleted = raw == -11 or (raw > 0 and bool(raw & DELETED_FLAG))
+    blinded = raw == -13 or (raw > 0 and bool(raw & BLINDED_FLAG))
+    secret = raw > 0 and bool(raw & SECRET_FLAG)
+    base = raw & ~(DELETED_FLAG | BLINDED_FLAG | SECRET_FLAG) if raw > 0 else raw
+    base_kind = KINDS.get(base, 'unknown(' + str(base) + ')')
+    kind = 'deleted' if deleted else ('blinded' if blinded else KINDS.get(base, 'unknown(' + str(raw) + ')'))
+    return {'kind': kind, 'base_type': base, 'base_kind': base_kind,
+            'is_deleted': deleted, 'is_blinded': blinded, 'is_secret': secret}
 
 
 def number(value):
@@ -114,12 +134,14 @@ class Database:
         self.dev = dev
         self.self_id = None
         self.names = {}
+        self.open_links = {}
         self.guard()
         own = self._query('KakaoTalk.db',
             "SELECT DISTINCT user_id FROM chat_logs WHERE json_extract(v,'$.isMine')=1")
         if len(own) == 1:
             self.self_id = own[0]['user_id']
         self._load_names()
+        self._load_open_links()
 
     def _query(self, db, sql):
         if db not in ('KakaoTalk.db', 'KakaoTalk2.db'):
@@ -170,6 +192,27 @@ class Database:
                 except DBUnavailable:
                     continue  # 신규 프로필 미지원: 식별자로 표시, 잘못된 이름 추측 금지
 
+    def _load_open_links(self):
+        """기존 평문 메타의 명시적 link id만 사용. SQLCipher 우회/키 접근 없음."""
+        self.open_links = {}
+        try:
+            cols = {r['name'] for r in self._query('KakaoTalk2.db', 'PRAGMA table_info(open_link)')}
+            if not {'id', 'name'} <= cols:
+                return
+            rows = self._query('KakaoTalk2.db', 'SELECT id,name FROM open_link')
+        except DBUnavailable:
+            return  # 선택적 메타 오류 때문에 본문 수신을 UI로 전환하지 않는다.
+        seen = set()
+        for row in rows:
+            ident, name = row['id'], row['name']
+            if type(ident) is not int or not isinstance(name, str) or not name.strip():
+                continue
+            if ident in seen:
+                self.open_links.pop(ident, None)
+                continue
+            seen.add(ident)
+            self.open_links[ident] = name
+
     def _sender(self, user_id, link_id=0):
         if user_id == self.self_id:
             return '나'
@@ -190,6 +233,10 @@ class Database:
                 content = item.get('content')
                 if isinstance(content, str) and content:
                     return content
+        if r['type'] in ('OM', 'OD'):
+            linked = getattr(self, 'open_links', {}).get(r['link_id'])
+            if linked:
+                return linked
         members = parse_json(r['members'], [])
         names = [self._sender(m, r['link_id']) for m in members if m != self.self_id]
         if names and all(not n.startswith('user:') for n in names):
@@ -223,11 +270,18 @@ class Database:
 
     def _decode(self, row, room):
         v = parse_json(row['v'], {})
-        text = decrypt(row['user_id'], v.get('enc'), row['message'])
-        kind = KINDS.get(row['type'], 'unknown(' + str(row['type']) + ')')
+        info = message_type(row['type'])
+        # 삭제·가림 플래그는 남은 암호문을 복호화하거나 원문으로 되살리지 않는다.
+        if info['is_deleted']:
+            text = '[Deleted]'
+        elif info['is_blinded']:
+            text = '[Blinded]'
+        else:
+            text = decrypt(row['user_id'], v.get('enc'), row['message'])
+        kind = info['kind']
         if not text and kind in ('photo', 'video'):
             text = '[Photo]' if kind == 'photo' else '[Video]'
-        return {'text': text, 'kind': kind, 'type': row['type'], 'sender': self._sender(row['user_id'], room['link_id']),
+        return {'text': text, **info, 'type': row['type'], 'sender': self._sender(row['user_id'], room['link_id']),
                 'user_id': row['user_id'], 'is_mine': v.get('isMine') in (True, 1, 'true'),
                 'created_at': row['created_at'], 'time': row['created_at'],
                 'unread_count': unread_count(row['id'], row['user_id'], parse_json(room['members'], []),

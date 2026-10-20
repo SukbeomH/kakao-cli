@@ -22,11 +22,13 @@ kakao read me --source ui
 `poll` 이벤트에는 동일 필드와 `room`이 추가된다. 기존 `room/text` 필드는 유지한다.
 
 방 이름은 자기채팅=`me`, `private_meta.name`, `meta[type=1].content`,
-복호화 가능한 멤버 이름 순서다. 나머지는 `room:<id>`로 명시하며 `rooms`의
+오픈채팅(`OM`/`OD`)의 `open_link.name`, 복호화 가능한 멤버 이름 순서다. 나머지는 `room:<id>`로 명시하며 `rooms`의
 `target`을 그대로 사용한다. 동명이면 ID를 사용한다. 방 이름을 DB에서 고유하게
 찾지 못하면 경고 후 기존 UI 이름 경로로 폴백한다. UI 이름과 DB ID를 추정해
 영구 저장하지 않는다. 현재 앱에는 `friends` 테이블이 없고 일부 프로필은
-신규 SQLCipher `crypto_user_database`로 이동했다. 해당 경로/키 파일은 읽지 않는다.
+신규 `crypto_user_database`로 이동했다. 일반 SQLite 읽기 전용 조회는 이 DB를
+`file is not a database`로 거절하며, 1차 구현에서는 SQLCipher를 사용한다. 기기 내부
+SQLCipher 엔진의 의존성 검토 전까지 새 암호화 프로필 조회는 미완료다. 키 파일은 읽지 않는다.
 오픈채팅 닉네임은 `KakaoTalk2.db.open_chat_member`에서 현재 계정 ID로 복호화한다.
 지원하지 않는 이름은 `user:<id>`로 표시한다.
 
@@ -51,23 +53,40 @@ PKCS#12 SHA-1 2회/32바이트 키, AES-256-CBC/PKCS7이다.
 TUI 방 목록·수신도 DB 우선이며 송신 직전에 매번 잠금을 확인하고 UI 방을 연다.
 이름 없는 ID 방에서는 TUI 송신을 거절한다. UI 폴링도 반복마다 잠금을 확인한다.
 
-## 종류 실측 표 (2026-10-20)
+## 종류 실측 표 (2026-10-20 후속 5)
 
-| DB type | 행 수 | 표시 |
-|---|---:|---|
-| 1 | 944 | text |
-| 2 | 40 | photo |
-| 3 | 1 | video |
-| 0 | 15 | unknown(0) |
-| 12 | 12 | unknown(12) |
-| 18 | 21 | unknown(18) |
-| 20 | 14 | unknown(20) |
-| 25 | 7 | unknown(25) |
-| 26 | 35 | unknown(26) |
-| 27 | 1 | unknown(27) |
-| 71 | 27 | unknown(71) |
-| 72 | 14 | unknown(72) |
-| 16385 / 16386 / 16410 | 각 1 | unknown(원본 숫자) |
+26.8.3 APK의 `ChatMessageType.kt`(`tg9`, classes10.dex) enum/플래그와 실기 분포를
+대조했다. 원본 `type`은 유지하며 `base_type`, `base_kind`, `is_deleted`,
+`is_blinded`, `is_secret`를 추가했다. 확인하지 않은 원본 숫자는 `unknown(n)`으로 남긴다.
 
-파일·시스템 등은 이 실측만으로 의미를 확정할 수 없어 추측하지 않았다.
-신규 SQLCipher 프로필과 다른 앱 버전은 후속 검증 범위다.
+| DB type | 행 수 | kind | 1차 enum |
+|---|---:|---|---|
+| 0 | 15 | system | Feed |
+| 1 | 945 | text | Text |
+| 2 | 40 | photo | Photo |
+| 3 | 1 | video | Video |
+| 12 | 12 | sticker | Sticker |
+| 18 | 21 | file | File |
+| 20 | 14 | animated_sticker | AnimatedSticker |
+| 25 | 7 | animated_sticker_ex | AnimatedStickerEx |
+| 26 | 35 | reply | Reply |
+| 27 | 1 | multi_photo | MultiPhoto |
+| 71 | 27 | leverage | Leverage |
+| 72 | 14 | alimtalk | Alimtalk |
+| 16385 | 1 | deleted (base_type=1) | DELETED_ALL_CHAT_TYPE=0x4000 |
+| 16386 | 1 | deleted (base_type=2) | 동일 플래그 |
+| 16410 | 1 | deleted (base_type=26) | 동일 플래그 |
+
+실기 합계 1,135행, 해석 실패0, 현재 관측값 중 unknown0이다.
+`-11`(DeletedAll), `-13`(OpenLinkIllegalBlind), 양수의 삭제0x4000/가림0x8000/
+비밀0x10000000 플래그는 같은 enum에서 확인했다. -11/-13/가림/비밀 조합은
+현재 실기 관측이 없어 **합성 테스트로만 검증**했다. 미확정 상위 비트는 일반 타입으로 추정하지 않는다.
+
+삭제·가림은 남아 있는 암호문을 복호화하지 않고 `[Deleted]`/`[Blinded]`로 표시한다.
+삭제·가림이 아닌 행은 기존 본문을 유지한다. reply는 답장 본문이며 인용 원문/첨부 확장은
+제공하지 않는다. system은 Feed 구분까지만 확인했고 입장/퇴장 등 세부 사건은 추측하지 않는다.
+
+실기 이름 확인은 14/55(25.45%) → 17/55(30.91%)다. 개선은 기존 평문 `open_link`의
+명시적 link ID 조인에서 왔으며, 새 SQLCipher 프로필을 읽어서 얻은 결과가 아니다.
+나머지 38개 방의 ID fallback은 유지한다. 프로필 엔진 의존성/키 접근/실기 복호화는 대기다.
+[후속 5 근거·검증·의존성 대기 기록](verification/2026-10-20-profile-types.md)을 참고한다.

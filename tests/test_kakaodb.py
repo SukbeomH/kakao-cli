@@ -166,10 +166,10 @@ def test_unknown_types_and_sender_row_key():
     obj = object.__new__(db.Database)
     obj.self_id, obj.names = 123, {}
     row = {'v': json.dumps({'enc': 31, 'isMine': True}), 'user_id': 123,
-           'message': encrypt(123, 31, '가짜'), 'type': 71, 'created_at': 7, '_id': 1, 'id': 9}
+           'message': encrypt(123, 31, '가짜'), 'type': 999, 'created_at': 7, '_id': 1, 'id': 9}
     room = {'link_id': 0, 'members': '[]', 'watermarks': '[]'}
     msg = obj._decode(row, room)
-    assert msg['kind'] == 'unknown(71)' and msg['text'] == '가짜' and msg['is_mine'] is True
+    assert msg['kind'] == 'unknown(999)' and msg['text'] == '가짜' and msg['is_mine'] is True
 
 
 @pytest.mark.parametrize('value,default', [('[]', {}), ('{}', []), ('"fake"', {})])

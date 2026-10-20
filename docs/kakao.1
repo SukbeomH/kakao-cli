@@ -222,3 +222,14 @@ Android /data는 기존 /opt/redroid/data 경로를 그대로 사용한다.
 이번 검증에서는 컨테이너를 생성/재시작하지 않았다. down -v는 금지한다.
 검증만 하려면 COMPOSE_DISABLE_ENV_FILE=1 docker compose -f deploy/compose.yaml config --quiet.
 Mac 래퍼 scripts/lima-compose.sh의 인자 없는 기본 동작도 config --quiet다.
+
+.SH 프로필 / 메시지 종류 후속
+현재 관측된 파일(18), 답장(26), 스티커(12/20/25), 시스템(0), 묶음사진(27),
+Leverage(71), Alimtalk(72)를 앱26.8.3 enum과 대조했다. 원본 type은 유지하며
+base_type/base_kind/is_deleted/is_blinded/is_secret를 상세 행에 추가한다.
+삭제/가림은 남은 암호문을 복호화하지 않고 표식으로 대체한다. 미확정 값은 unknown(n).
+기존 평문 open_link.name의 명시적 ID 매핑으로 오픈채팅 이름을 보완했다.
+새 암호화 프로필 DB 조회는 기기 내부 SQLCipher 엔진의 의존성 검토 대기이며 미완료다.
+엔진/키/배포 파일을 추가·수정하지 않았다. 상세 근거는
+.B docs/verification/2026-10-20-profile-types.md
+참고.

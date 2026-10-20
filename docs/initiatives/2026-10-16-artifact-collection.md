@@ -379,3 +379,26 @@ B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환:
 - Hermes 검토용 `/home/agent/kakao-tasks/REPORT_profile_dependency_codex.md`와
   [저장소 의존성 보고](../verification/2026-10-20-profile-dependency.md)를 작성했다.
   키 파일 접근/새 의존성/엔진 배치/DB 사본 반출 없음. 다른 독립 단계는 계속한다.
+
+### 후속 5 — 확정 타입·기존 프로필 메타 보완 (2026-10-20)
+
+- 의존성 게이트는 `be1dcfc`로 먼저 커밋했다. 새 암호화 프로필 조회는 계속 미완료·대기다.
+  기존 cryptography 외 의존성을 추가하지 않았다.
+- 합성 계약19개를 먼저 실행(18 실패/1 통과)한 뒤 확인된 타입/플래그를 구현했다.
+  수집 APK26.8.3의 ChatMessageType.kt(tg9/classes10.dex) enum을 기존 JADX 출력에서 확인.
+  REA JADX provider는 환경변수 미설정으로 unavailable여서 설정/설치 없이 기존 증거를 썼다.
+- system/file/reply/sticker 계열/multi_photo/leverage/alimtalk를 확정 매핑하고 원본 type 보존.
+  base_type/base_kind/is_deleted/is_blinded/is_secret 추가, 미확정은 unknown(n).
+  삭제/가림 행은 남은 암호문을 복호화하지 않고 표식 처리한다.
+- 기존 평문 open_link의 명시적 link id를 OM/OD 방 이름에 사용했다.
+  중복/빈 이름/열 부재/선택 메타 조회 실패는 이름을 추정하지 않는다.
+- 실기: 방 이름 확인14/55(25.45%) → 17/55(30.91%), 기존 멤버 이름45/오픈링크 이름4.
+  개선은 기존 평문 메타에서 왔으며 새 SQLCipher 프로필 복호화 성공으로 계산하지 않는다.
+- 메시지1,135행 모두 해석, 실패0/관측 unknown0. system15/file21/reply35/삭제3.
+  삭제·가림 제외 본문1,103/1,103, 기준의 미삭제 본문·isMine 일치=true.
+- 코드와 기준 소스는 SSH stdin으로 원격 메모리에서만 실행했다. 운영 배포 경로/컨테이너는
+  수정하지 않았다. UI/전송/키 파일 접근/DB 사본 반출 없음, 서비스 시작 시각 유지·재시작0.
+- 최종 회귀136통과(기존104+신규32), 허용목록 보강 후 신규32재통과.
+  검증 집계는 숫자·불리언·공개 타입 라벨만 허용해 민감정보 출력을 차단한다.
+- [후속 검증·한계·APK 근거](../verification/2026-10-20-profile-types.md),
+  [수신 종류 표](../db-receive.md), README/man 갱신. 푸시/머지/실배포 없음.
