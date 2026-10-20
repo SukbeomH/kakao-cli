@@ -1,7 +1,8 @@
 # DB 수신 경로
 
 `rooms`, `read`, `poll`의 기본값은 `--source db`다. 기기 내부의
-`sqlite3 -readonly -json` 결과만 `adb exec-out` 표준출력으로 메모리에 받는다.
+`sqlite3 -readonly -json` 결과와 선택적 기기 내부 SQLCipher 프로필 조회 결과를
+`adb exec-out` 표준출력으로 메모리에 받는다.
 DB 파일·WAL·사본을 반출하거나 쓰기, VACUUM, 체크포인트를 실행하지 않는다.
 복호화 본문과 이름은 요청 응답/화면용 메모리에서만 사용하며 로그/캐시에 쓰지 않는다.
 UI 폴백의 dump도 `/dev/tty`로 수신해 파일을 만들지 않는다.
@@ -26,9 +27,10 @@ kakao read me --source ui
 `target`을 그대로 사용한다. 동명이면 ID를 사용한다. 방 이름을 DB에서 고유하게
 찾지 못하면 경고 후 기존 UI 이름 경로로 폴백한다. UI 이름과 DB ID를 추정해
 영구 저장하지 않는다. 현재 앱에는 `friends` 테이블이 없고 일부 프로필은
-신규 `crypto_user_database`로 이동했다. 일반 SQLite 읽기 전용 조회는 이 DB를
-`file is not a database`로 거절하며, 1차 구현에서는 SQLCipher를 사용한다. 기기 내부
-SQLCipher 엔진의 의존성 검토 전까지 새 암호화 프로필 조회는 미완료다. 키 파일은 읽지 않는다.
+신규 `crypto_user_database`로 이동했다. 일반 SQLite로 열리지 않는 이 DB는 사용자 승인에 따라
+공식 SQLCipher Android 4.10.0으로 기기 내부에서 제자리 `OPEN_READONLY` 조회한다.
+아래 준비가 없거나 엔진/키/스키마 조회에 실패하면 기존 이름과 ID fallback을 유지한다.
+이 선택적 이름 조회 실패만으로 UI 경로로 전환하지 않는다.
 오픈채팅 닉네임은 `KakaoTalk2.db.open_chat_member`에서 현재 계정 ID로 복호화한다.
 지원하지 않는 이름은 `user:<id>`로 표시한다.
 
@@ -86,7 +88,36 @@ TUI 방 목록·수신도 DB 우선이며 송신 직전에 매번 잠금을 확�
 삭제·가림이 아닌 행은 기존 본문을 유지한다. reply는 답장 본문이며 인용 원문/첨부 확장은
 제공하지 않는다. system은 Feed 구분까지만 확인했고 입장/퇴장 등 세부 사건은 추측하지 않는다.
 
-실기 이름 확인은 14/55(25.45%) → 17/55(30.91%)다. 개선은 기존 평문 `open_link`의
-명시적 link ID 조인에서 왔으며, 새 SQLCipher 프로필을 읽어서 얻은 결과가 아니다.
-나머지 38개 방의 ID fallback은 유지한다. 프로필 엔진 의존성/키 접근/실기 복호화는 대기다.
-[후속 5 근거·검증·의존성 대기 기록](verification/2026-10-20-profile-types.md)을 참고한다.
+이전 평문 메타 보완은 방 이름14/55 → 17/55였다.
+[당시 타입·의존성 대기 기록](verification/2026-10-20-profile-types.md)은 역사적 근거다.
+추가 승인 후 SQLCipher 실키 조회로 방 이름17/55 → 55/55, 발신자 이름536/1,135 →
+1,025/1,135행을 확인했다. 이는 DB 이름의 ID 조인 검증이며 UI 표시와의 대조는 아니다.
+
+## 선택적 SQLCipher 프로필 준비
+
+소스 체크아웃에서 JDK와 Android SDK의 D8을 준비한 뒤 실행한다.
+실측 도구는 javac21.0.12.1 / D8 9.2.4-dev(아래 검증 문서의 빌드 식별자)다.
+
+```bash
+uv run --python .venv/bin/python scripts/build-profile-helper.py --d8 /path/to/android-build-tools/d8
+```
+
+`--d8` 대신 `KAKAO_D8`도 가능하다. 공식 Zetetic AAR4.10.0과 그 런타임 API 의존
+AndroidX SQLite2.2.0만 버전·SHA-256 고정으로 받는다. 공개 배포물과 빌드 helper는
+`~/.cache/kakao-cli/sqlcipher-4.10.0/`에만 둔다. Python 의존성 추가는 없다.
+helper 재현 빌드가 고정 해시와 다르면 설치하지 않으며 실행도 거절한다.
+실행 호스트마다 해당 캐시를 준비해야 한다. Docker 이미지에는 포함하지 않는다.
+
+기기는 기존 root 권한이 필요하며 helper가 `adb root`를 요청하거나 서비스를 재시작하지 않는다.
+공개 helper/라이브러리만 `/data/local/tmp/kakao-cli-profile-helper`에 배치하고 기기에서도
+해시를 확인한다. 기존 디렉터리가 있으면 경합으로 거절하며 타 실행의 파일을 삭제하지 않는다.
+실행 후 자신이 만든 임시 경로와 ART 캐시를 정리하고 부재를 확인한다.
+키는 기기 내부에서 지정된 DataStore 두 필드만 해석해 도출하고 native byte[] API에 전달한다.
+키를 argv/환경변수/SQL 문자열/출력/파일로 넘기지 않으며 Java·SQLCipher 로그와 core dump를 끈다.
+DB·WAL·프로필 사본은 기기 안팎 어디에도 만들지 않는다.
+
+방 이름 우선순위는 기존 메타를 유지한다. PlusChat 채널은 chat_id와 참가자/실제 발신자 ID가
+함께 일치하고 후보가 하나일 때만 이름을 채운다. 일반 멤버 이름은 friend/contact/nickname
+우선순위를 사용하며 오픈채팅의 방별 별칭은 전역 프로필로 덮어쓰지 않는다.
+확인되지 않은 발신자110행은 계속 ID를 사용한다.
+[고정 해시·읽기 전용 계약·실기 검증·한계](verification/2026-10-20-profile-sqlcipher.md)를 참고한다.

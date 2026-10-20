@@ -216,6 +216,11 @@ ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
   [암호 형식·읽음수·방 선택·종류 표](docs/db-receive.md)를 참고한다.
   파일·답장·스티커·시스템·삭제 상태는 현재 앱의 1차 enum과 대조한 라벨을 제공한다.
   삭제/가림 본문은 복호화하지 않으며, 미확정 타입은 `unknown(n)`으로 유지한다.
+  사용자 승인된 선택적 프로필 경로는 공식 SQLCipher Android4.10.0을 기기 내부에서
+  `OPEN_READONLY`로 실행한다. [helper 준비](docs/db-receive.md#선택적-sqlcipher-프로필-준비)가
+  없거나 조회에 실패하면 기존 이름/ID를 유지한다. 키와 DB 사본은 기기 밖으로 보내지 않는다.
+  [실키 검증](docs/verification/2026-10-20-profile-sqlcipher.md): 방 이름17/55 → 55/55,
+  메시지1,135행 본문·종류·is_mine 일치. 이번 코드는 운영 서비스에 배포하지 않았다.
 - **`watch`(보조)**: OS 알림(`dumpsys notification`)을 읽는다. **앱이 백그라운드**여야
   알림이 뜬다(포그라운드면 즉시 읽음 처리). 방 무관하게 잡지만 음소거/포커스 방은 놓친다.
 
