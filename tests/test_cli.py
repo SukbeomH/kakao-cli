@@ -111,7 +111,7 @@ def test_webui_console_page_and_state(tmp_path):
         assert 'id="list"' not in body and "/api/send" not in body     # no chat UI
         st, body = _http("GET", base + "/api/state")
         snap = _json.loads(body)
-        assert st == 200 and set(snap) == {"seq", "status"}
+        assert st == 200 and set(snap) == {"seq", "status", "clip_seq", "scrcpy"}
         worker.events.put(("status", "hello"))
         for _ in range(50):
             snap = _json.loads(_http("GET", base + "/api/state")[1])
@@ -526,5 +526,154 @@ def test_android_upload_and_download(tmp_path):
         assert st == 200 and data == b"\xff\xd8\xffJPEGDATA" and h["Content-Length"] == "11"
         assert _req(base, "GET", "/api/fs/android/get?path=/sdcard/nope")[0] == 404
         assert _req(base, "GET", "/api/fs/android/get?path=rel")[0] == 400
+    finally:
+        httpd.shutdown()
+
+
+# --- console B: scrcpy bridge (protocol, pinning, reconnect, clipboard API) ---
+def test_scrcpy_control_encoding():
+    import struct
+    sys.path.insert(0, "src")
+    from kakao_cli import scrcpy as S
+    k = S.enc_keycode(S.ACTION_DOWN, 67)
+    assert len(k) == 14 and k[0] == 0 and struct.unpack(">BBiii", k) == (0, 0, 67, 0, 0)
+    t = S.enc_touch(S.ACTION_DOWN, 400, 640, 800, 1280)
+    assert len(t) == 32
+    typ, act, pid, x, y, w, h, pr, ab, bt = struct.unpack(">BBqiiHHHii", t)
+    assert (typ, act, pid, x, y, w, h, pr) == (2, 0, -2, 400, 640, 800, 1280, 0xFFFF)
+    assert struct.unpack(">BBqiiHHHii", S.enc_touch(S.ACTION_UP, 1, 2, 3, 4))[7] == 0
+    c = S.enc_set_clipboard(7, "한글🙂", True)
+    assert c[:14] == struct.pack(">BqBi", 9, 7, 1, len("한글🙂".encode())) and c[14:].decode() == "한글🙂"
+    try:
+        S.enc_set_clipboard(1, "x" * (S.CLIP_MAX + 1), False); assert False
+    except ValueError:
+        pass
+    assert S.enc_reset_video() == b"\x11"
+    assert S.enc_start_app("com.kakao.talk") == b"\x10\x0e" + b"com.kakao.talk"
+    assert S.enc_resize_display(1280, 800) == struct.pack(">BHH", 21, 1280, 800)
+    assert S.enc_scan_file("/sdcard/a") == struct.pack(">Bi", 22, 9) + b"/sdcard/a"
+
+
+def test_scrcpy_device_and_video_parsers():
+    import struct
+    sys.path.insert(0, "src")
+    from kakao_cli import scrcpy as S
+    msg = (b"\x00" + struct.pack(">i", 6) + "복사".encode() + b"\x01" + struct.pack(">q", 42)
+           + b"\x02" + struct.pack(">HH", 1, 2) + b"zz")
+    p = S.DeviceMsgParser(); out = []
+    for i in range(len(msg)):                       # byte-by-byte: framing survives splits
+        out += p.feed(msg[i:i + 1])
+    assert out == [("clipboard", "복사"), ("ack", 42)]
+    sps = b"\x00\x00\x00\x01\x67\x42\xc0\x29\x8d"
+    stream = (struct.pack(">I", 0x68323634) + struct.pack(">III", 0x80000000, 800, 1280)
+              + struct.pack(">QI", 1 << 62, len(sps)) + sps
+              + struct.pack(">QI", (1 << 61) | 1000, 3) + b"KEY"
+              + struct.pack(">QI", 2000, 2) + b"DD")
+    v = S.VideoParser(); ev = []
+    for i in range(0, len(stream), 5):
+        ev += v.feed(stream[i:i + 5])
+    assert ev[0] == ("codec", 0x68323634) and ev[1] == ("session", 800, 1280, 0)
+    assert ev[2] == ("config", sps) and ev[3] == ("frame", 1000, True, b"KEY")
+    assert ev[4] == ("frame", 2000, False, b"DD")
+    assert S.avc_codec_string(sps) == "avc1.42C029"
+
+
+def test_scrcpy_server_pinning(tmp_path):
+    sys.path.insert(0, "src")
+    from kakao_cli import scrcpy as S
+    good = tmp_path / "good"; good.write_bytes(b"pinned")
+    old = S.SHA256
+    S.SHA256 = S.sha256_file(str(good))
+    try:
+        assert S.ensure_server(str(good)) == str(good)
+        bad = tmp_path / "bad"; bad.write_bytes(b"tampered")
+        for f in (lambda: S.ensure_server(str(bad)), lambda: S.ensure_server(str(tmp_path / "nope"))):
+            try:
+                f(); assert False
+            except S.ScrcpyError:
+                pass
+        cache = tmp_path / "cache"
+        p = S.ensure_server(None, str(cache), fetch=lambda u, d: open(d, "wb").write(b"pinned"))
+        assert open(p, "rb").read() == b"pinned"
+        assert S.ensure_server(None, str(cache), fetch=lambda u, d: 1 / 0) == p   # cached, no fetch
+        try:
+            S.ensure_server(None, str(tmp_path / "c2"), fetch=lambda u, d: open(d, "wb").write(b"evil"))
+            assert False
+        except S.ScrcpyError:
+            pass
+        assert not os.listdir(tmp_path / "c2")                                   # nothing kept
+    finally:
+        S.SHA256 = old
+
+
+def test_scrcpy_session_reconnects():
+    sys.path.insert(0, "src")
+    from kakao_cli import scrcpy as S
+
+    class Flaky(S.ScrcpySession):
+        calls = 0
+        def _connect(self):
+            Flaky.calls += 1
+            if Flaky.calls == 1:
+                raise S.ScrcpyError("boom")
+            self.connected = True
+        def _close(self):
+            self.connected = False
+        def _cleanup_device(self):
+            pass
+    s = Flaky(dev=None, server_path="x")
+    s.start()
+    try:
+        for _ in range(60):
+            if s.connected:
+                break
+            time.sleep(0.05)
+        assert s.connected and Flaky.calls == 2 and s.error is None
+        s.connected = False                          # simulate a dropped socket
+        for _ in range(80):
+            if Flaky.calls >= 3 and s.connected:
+                break
+            time.sleep(0.05)
+        assert Flaky.calls >= 3 and s.connected
+    finally:
+        s.stop()
+
+
+class _FakeBridge:
+    def __init__(self):
+        self.connected = True; self.on_change = None; self.sets = []; self.seq = 0; self.text = ""
+    def clip(self):
+        return self.seq, self.text
+    def set_clipboard(self, text, paste=False, timeout=3.0):
+        self.sets.append((text, paste)); return True
+
+
+def test_clipboard_api(tmp_path):
+    import threading
+    sys.path.insert(0, "src")
+    from kakao_cli import webui
+    from kakao_cli.scrcpy import CLIP_MAX
+    worker = _StubWorker(); bridge = _FakeBridge()
+    httpd = webui.serve(worker, "127.0.0.1", 0, fs_root=str(tmp_path), bridge=bridge)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        snap0 = _json.loads(_http("GET", base + "/api/state")[1])
+        bridge.seq, bridge.text = 1, "기기에서 복사"
+        bridge.on_change()                            # device copy → state seq bumps
+        snap = _json.loads(_http("GET", base + "/api/state")[1])
+        assert snap["clip_seq"] == 1 and snap["seq"] > snap0["seq"] and snap["scrcpy"] is True
+        assert "기기에서" not in _json.dumps(snap, ensure_ascii=False)   # text not in polls
+        st, b = _http("GET", base + "/api/clip")
+        assert st == 200 and _json.loads(b)["text"] == "기기에서 복사"
+        assert _http("POST", base + "/api/clip", {"text": "붙여넣기", "paste": True})[0] == 200
+        assert bridge.sets == [("붙여넣기", True)]
+        assert _http("POST", base + "/api/clip", {"text": ""})[0] == 400
+        assert _http("POST", base + "/api/clip", {"text": "x" * (CLIP_MAX + 1)})[0] == 400
+        assert _req(base, "POST", "/api/clip", b'{"text":"a"}', {"Content-Type": "text/plain"})[0] == 415
+        bridge.connected = False                      # no scrcpy: paste → ADBKeyBoard typing
+        assert _http("POST", base + "/api/clip", {"text": "타이핑", "paste": True})[0] == 200
+        assert ("screentext", "타이핑") in worker.puts
+        assert _http("POST", base + "/api/clip", {"text": "x"})[0] == 503
     finally:
         httpd.shutdown()

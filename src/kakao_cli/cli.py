@@ -132,7 +132,8 @@ def cmd_webui(args) -> int:
     webui.run(serial=args.serial, addr=args.addr, adb=args.adb,
               host=args.host, port=args.port, allow_screen=args.allow_screen,
               fs_root=args.fs_root, max_upload=args.max_upload,
-              allow_hosts=args.allow_host or ())
+              allow_hosts=args.allow_host or (), scrcpy_server=args.scrcpy_server,
+              use_scrcpy=not args.no_scrcpy)
     return 0
 
 
@@ -254,6 +255,11 @@ def build_parser():
             sp.add_argument("--allow-host", action="append", metavar="NAME",
                             help="extra Host name accepted by console APIs besides IP "
                                  "literals/localhost (e.g. a tailscale serve name); repeatable")
+            sp.add_argument("--scrcpy-server", metavar="PATH",
+                            help="offline scrcpy-server v5.0.1 file (sha256-verified); default: "
+                                 "download once into ~/.cache/kakao-cli/")
+            sp.add_argument("--no-scrcpy", action="store_true",
+                            help="don't start scrcpy-server (no clipboard/video; screencap + adb input)")
             sp.add_argument("--fs-root", default="~", metavar="PATH",
                             help="local file-manager root in the console (default: ~); "
                                  "the pane cannot leave it")

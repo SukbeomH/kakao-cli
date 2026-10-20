@@ -25,6 +25,8 @@ from urllib.parse import parse_qs, unquote
 from .adb import connect
 from .worker import Worker
 from .screen import ScreenBuffer, view_to_device
+from .scrcpy import CLIP_MAX, ScrcpySession, ensure_server, ScrcpyError
+from .scrcpy import VERSION as SCRCPY_VERSION
 from .fs import (LocalRoot, shq, parse_stat_lines, android_list_cmd,
                  android_parent, unique_name, content_disposition, clean_upload_name,
                  host_allowed)
@@ -55,10 +57,18 @@ class State:
         self.lock = threading.Lock()
         self.seq = 0
         self.status = "starting …"
+        self.bridge = None            # ScrcpySession (clipboard/input/video) or None
 
     def snapshot(self) -> dict:
+        b = self.bridge
+        clip_seq = b.clip()[0] if b else 0
         with self.lock:
-            return {"seq": self.seq, "status": self.status}
+            return {"seq": self.seq, "status": self.status, "clip_seq": clip_seq,
+                    "scrcpy": bool(b and b.connected)}
+
+    def bump(self):
+        with self.lock:
+            self.seq += 1
 
     def set_status(self, text: str):
         with self.lock:
@@ -238,6 +248,12 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self.wfile.write(frame)
             elif path.startswith("/api/fs/"):
                 self._fs_get(path)
+            elif path == "/api/clip":
+                if not self._console_get_ok():
+                    return
+                b = state.bridge
+                seq, text = b.clip() if b else (0, "")
+                self._json(200, {"seq": seq, "text": text, "available": bool(b and b.connected)})
             else:
                 self._json(404, {"error": "not found"})
 
@@ -307,6 +323,8 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._fs_transfer()
             elif self.path.split("?", 1)[0] == "/api/fs/upload":
                 self._fs_upload()
+            elif self.path == "/api/clip":
+                self._clip_post()
             else:
                 self._json(404, {"error": "not found"})
 
@@ -411,6 +429,30 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 return self._json(202, {"id": jid, "name": final})
             self._json(201, {"name": final, "path": fsroot.rel(os.path.join(target_dir, final))})
 
+        def _clip_post(self):
+            """Browser → device clipboard (paste=true also pastes into the focused
+            field). Without scrcpy, paste falls back to typing via ADBKeyBoard."""
+            if not self._guard():
+                return
+            body = self._read_json()
+            text = body.get("text")
+            if not isinstance(text, str) or not text:
+                return self._json(400, {"error": "text required"})
+            if len(text.encode("utf-8")) > CLIP_MAX:
+                return self._json(400, {"error": "too long (max %d bytes)" % CLIP_MAX})
+            paste = bool(body.get("paste"))
+            b = state.bridge
+            if b and b.connected:
+                try:
+                    ok = b.set_clipboard(text, paste)
+                except Exception as e:
+                    return self._json(503, {"error": str(e)})
+                return self._json(200 if ok else 504, {"ok": ok, "via": "scrcpy"})
+            if paste:
+                worker.put("screentext", text)
+                return self._json(200, {"ok": True, "via": "adbkeyboard"})
+            self._json(503, {"error": "device clipboard unavailable (scrcpy not running)"})
+
         def _guard(self) -> bool:
             """Shared gate for every console control: enabled + JSON + same-origin."""
             if not screen_enabled:
@@ -514,9 +556,12 @@ def _num(v, default=0):
 def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
           screen: ScreenBuffer = None, screen_enabled: bool = True,
           fs_root: str = "~", max_upload: int = DEFAULT_MAX_UPLOAD,
-          allow_hosts=(), disk_free=None) -> ThreadingHTTPServer:
+          allow_hosts=(), disk_free=None, bridge=None) -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
+    state.bridge = bridge
+    if bridge is not None:
+        bridge.on_change = state.bump
     if tmpdir is None:
         tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     if screen is None:
@@ -535,7 +580,8 @@ def _is_local(host: str) -> bool:
 
 
 def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_screen=False,
-        fs_root="~", max_upload=DEFAULT_MAX_UPLOAD, allow_hosts=()):
+        fs_root="~", max_upload=DEFAULT_MAX_UPLOAD, allow_hosts=(), scrcpy_server=None,
+        use_scrcpy=True):
     dev = connect(serial, addr, adb=adb)
     tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     screen = ScreenBuffer()
@@ -544,13 +590,34 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
     screen_enabled = _is_local(host) or allow_screen
     worker = Worker(dev, screen=screen, chat=False)
     worker.start()
+    # scrcpy-server bridge (clipboard, fast input, video) — only when the console
+    # is on; without it the console still works on screencap + adb input
+    bridge, bridge_note = None, "off"
+    if screen_enabled and use_scrcpy:
+        try:
+            bridge = ScrcpySession(dev, ensure_server(scrcpy_server))
+            bridge.start()
+            bridge_note = "scrcpy-server v%s (Apache-2.0)" % SCRCPY_VERSION
+        except (ScrcpyError, OSError) as e:
+            bridge_note = "unavailable: %s" % e
     httpd = serve(worker, host, port, tmpdir=tmpdir, screen=screen,
                   screen_enabled=screen_enabled, fs_root=fs_root,
-                  max_upload=max_upload, allow_hosts=allow_hosts)
+                  max_upload=max_upload, allow_hosts=allow_hosts, bridge=bridge)
+    # SIGTERM (systemd/kill) and SIGHUP (closed terminal, `tmux kill-session`)
+    # must still clean up the device: scrcpy process, adb forward, pushed jar
+    import signal
+    def _term(*_):
+        raise KeyboardInterrupt
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _term)
+        except (ValueError, AttributeError):
+            pass
     shown = host if host not in ("0.0.0.0", "") else "<vm-ip>"
     print(f"kakao-cli webui on http://{shown}:{port}  (Ctrl-C to stop)")
     print(f"  screen view / console (files): {'ON' if screen_enabled else 'OFF'}"
           f"  — local file root: {LocalRoot(fs_root).root}")
+    print(f"  device bridge: {bridge_note}")
     if not _is_local(host):
         print("  WARNING: bound to all interfaces with no auth — anyone on the "
               "network can control this KakaoTalk account.")
@@ -564,7 +631,9 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
     except KeyboardInterrupt:
         pass
     finally:
-        httpd.shutdown()
+        if bridge is not None:
+            bridge.stop()
+        httpd.server_close()
         worker.put("quit")
 
 
@@ -642,6 +711,14 @@ PAGE = r"""<!doctype html>
     user-select:none;-webkit-user-select:none}
   #kbcap{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;
     resize:none;font-size:16px}
+  .toast{position:fixed;right:12px;bottom:calc(40px + var(--safe-b));max-width:min(460px,92vw);
+    background:var(--bar);border:1px solid var(--accent);border-radius:6px;padding:8px 10px;
+    z-index:15;display:flex;gap:8px;align-items:center;box-shadow:0 4px 18px rgba(0,0,0,.5)}
+  .toast[hidden]{display:none}
+  .toast .tl{color:var(--dim);white-space:nowrap}
+  .toast .tp{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .toast button{color:var(--accent);border:1px solid var(--line);border-radius:3px;padding:2px 8px}
+  .statusbar label{font-size:12px;color:var(--dim);white-space:nowrap;cursor:pointer}
   .disabled-note{color:var(--unread);padding:16px;text-align:center;white-space:normal}
   .ovl{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:20;padding-top:10vh}
   .ovl.show{display:block}
@@ -687,6 +764,7 @@ PAGE = r"""<!doctype html>
     <div class="center">
       <div class="scrbar">
         <button id="ckback">Back</button><button id="ckhome">Home</button><button id="ckenter">Enter</button>
+        <button id="ckclip" title="브라우저 클립보드를 기기로 붙여넣기 (화면 포커스 중 Ctrl/Cmd+V도 됨)">📋 기기로</button>
         <span class="kbhint" id="kbhint">화면을 클릭하면 키보드가 기기로 갑니다 · Esc 해제</span>
         <span class="fps" id="cfps"></span>
       </div>
@@ -696,7 +774,14 @@ PAGE = r"""<!doctype html>
   </div>
   <div class="bar statusbar" id="statusbar">
     <span id="status" role="status">starting …</span>
+    <label id="clipauto-l" hidden title="기기에서 복사하면 브라우저 클립보드에 자동으로 (https/localhost에서만)">
+      <input type="checkbox" id="clipauto"> 자동 복사</label>
+    <span class="badge" id="clipbadge" title="기기 클립보드 연동(scrcpy)">📋 —</span>
     <span class="badge" id="vmode" title="화면 전달 방식">PNG</span>
+  </div>
+  <div class="toast" id="cliptoast" hidden role="status">
+    <span class="tl">기기 클립보드:</span><span class="tp" id="clipprev"></span>
+    <button id="clipcopy">복사</button><button id="clipx" aria-label="닫기">✕</button>
   </div>
   <div class="ovl" id="helpovl"><div class="panel"><h3>콘솔 도움말</h3><div class="help" id="helptext"></div></div></div>
 <script>
@@ -729,14 +814,66 @@ let tempStatus = 0;
 function setStatus(s){ $("status").textContent = " "+s; tempStatus = Date.now(); }
 
 // ---- server status line (worker errors etc.) ----
-let stSeq = -1;
+let stSeq = -1, clipSeq = null, clipText = "";
 async function pollState(){
   try{
     const r = await fetch("/api/state?since="+stSeq);
     if(r.status===200){ const j = await r.json(); stSeq = j.seq;
-      if(Date.now()-tempStatus > 4000) $("status").textContent = " "+(j.status||""); }
+      if(Date.now()-tempStatus > 4000) $("status").textContent = " "+(j.status||"");
+      $("clipbadge").textContent = j.scrcpy ? "📋 연동" : "📋 —";
+      if(clipSeq===null) clipSeq = j.clip_seq;            // don't toast what was there before
+      else if(j.clip_seq !== clipSeq){ clipSeq = j.clip_seq; deviceClipChanged(); }
+    }
   }catch(e){}
 }
+// ---- clipboard: device → browser (toast / opt-in auto copy), browser → device ----
+const secure = window.isSecureContext && !!(navigator.clipboard && navigator.clipboard.writeText);
+if(secure){ $("clipauto-l").hidden = false; $("clipauto").checked = lsGet("kakao.clipauto", false); }
+$("clipauto").onchange = ()=> lsSet("kakao.clipauto", $("clipauto").checked);
+async function deviceClipChanged(){
+  let j; try{ j = await (await fetch("/api/clip")).json(); }catch(e){ return; }
+  clipText = j.text || "";
+  if(!clipText) return;
+  if(secure && $("clipauto").checked){
+    try{ await navigator.clipboard.writeText(clipText); setStatus("기기 클립보드를 브라우저로 복사함"); return; }
+    catch(e){ /* no focus/permission → fall back to the toast */ }
+  }
+  $("clipprev").textContent = clipText.replace(/\s+/g," ").slice(0,120);
+  $("cliptoast").hidden = false;
+}
+function copyText(t){
+  if(secure){ return navigator.clipboard.writeText(t).then(()=>true, ()=>legacyCopy(t)); }
+  return Promise.resolve(legacyCopy(t));
+}
+function legacyCopy(t){                         // http fallback; needs the click gesture
+  const ta = document.createElement("textarea"); ta.value = t;
+  ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta);
+  ta.select(); let ok=false; try{ ok = document.execCommand("copy"); }catch(e){}
+  ta.remove(); return ok;
+}
+$("clipcopy").onclick = async ()=>{
+  const ok = await copyText(clipText);
+  setStatus(ok ? "브라우저 클립보드로 복사함" : "복사 실패 — 미리보기를 직접 선택해 복사하세요");
+  if(ok) $("cliptoast").hidden = true;
+};
+$("clipx").onclick = ()=>{ $("cliptoast").hidden = true; };
+async function clipToDevice(text, paste){
+  try{
+    const r = await fetch("/api/clip", {method:"POST", headers:{"Content-Type":"application/json"},
+                                        body: JSON.stringify({text, paste})});
+    const j = await r.json();
+    setStatus(r.ok ? (paste ? "기기에 붙여넣음" : "기기 클립보드에 넣음") +
+              (j.via==="adbkeyboard" ? " (타이핑)" : "") : ("클립보드 실패: "+(j.error||r.status)));
+  }catch(e){ setStatus("클립보드 실패: 연결"); }
+}
+$("ckclip").onclick = async ()=>{
+  if(navigator.clipboard && navigator.clipboard.readText && window.isSecureContext){
+    try{ const t = await navigator.clipboard.readText(); if(t){ clipToDevice(t, true); return; } }
+    catch(e){ /* permission denied → hint below */ }
+  }
+  $("kbcap").focus({preventScroll:true});
+  setStatus("화면을 클릭한 뒤 Ctrl/Cmd+V 로 붙여넣으세요 (http 접속에서는 버튼으로 읽을 수 없음)");
+};
 
 // ---- live screen: PNG frames (fallback renderer) ----
 let frameLoop=false, fpsCount=0, fpsT=Date.now(), scrSeq=0, pngWanted=true;
@@ -888,9 +1025,9 @@ async function transfer(op){
   await watchJob(j.id, job, op==="pull" ? "local" : "android", dst);
 }
 // ---- browser ⇄ VM/device: uploads (XHR for progress) and downloads ----
-function uploadOne(which, f){
+function uploadOne(which, f, dirOverride){
   return new Promise(resolve=>{
-    const P = fp[which], dir = P.path || "";
+    const P = fp[which], dir = dirOverride || P.path || "";
     const job = {state:"running", label:"⇪ "+f.name+(which==="android"?" → 기기":" → VM"), note:"0%"};
     jobs.push(job); renderJobs();
     const q = (which==="android" ? "target=android&" : "") + "dir="+encodeURIComponent(dir) +
@@ -957,6 +1094,21 @@ kbcap.addEventListener("input", e=>{
 });
 kbcap.addEventListener("compositionend", ()=>{
   const v = kbcap.value; kbcap.value = ""; kbQueue(v);   // committed syllables only
+});
+// Ctrl/Cmd+V while the screen has the keyboard: text → device clipboard + paste
+// into the focused field (exact, keeps newlines); images/files → device Download
+kbcap.addEventListener("paste", e=>{
+  const cd = e.clipboardData; if(!cd) return;
+  const files = [...(cd.files || [])];
+  if(files.length){
+    e.preventDefault();
+    files.forEach((f,i)=>{ const named = f.name && f.name!=="image.png" ? f : new File([f],
+      "paste-"+Date.now()+"-"+i+"."+((f.type||"").split("/")[1]||"bin"), {type:f.type});
+      uploadOne("android", named, "/sdcard/Download/"); });
+    return;
+  }
+  const t = cd.getData("text");
+  if(t){ e.preventDefault(); kbFlush(); clipToDevice(t, true); }
 });
 kbcap.addEventListener("focus", ()=> $("conwrap").classList.add("kbon"));
 kbcap.addEventListener("blur", ()=>{ kbFlush(); $("conwrap").classList.remove("kbon"); });
