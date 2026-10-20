@@ -121,6 +121,19 @@ kakao webui --connect 10.0.0.30:5555           # http://127.0.0.1:8800
 ssh -L 8800:127.0.0.1:8800 agent@192.168.0.30  # 원격 VM이면 SSH 터널 → 로컬 브라우저로 localhost:8800
 ```
 
+VM에 소스로 배포해 LAN에서 상시 띄우는 예(무인증 — **신뢰하는 LAN 전용**, 공용망 노출 금지):
+
+```bash
+scp src/kakao_cli/*.py agent@192.168.0.30:kakao-cli/src/kakao_cli/
+ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
+  "cd ~/kakao-cli && PYTHONPATH=src python3 -m kakao_cli webui \
+   --host 192.168.0.30 --port 8800 --allow-screen --serial 127.0.0.1:5555"'
+# 접속: http://192.168.0.30:8800 (http → MSE 영상, 클립보드는 토스트/Ctrl+V 수동)
+# 종료: ssh agent@192.168.0.30 tmux kill-session -t kwebui  (SIGHUP에도 jar·forward·잠금 정리)
+```
+
+콘솔 탭이 열려 가상 디스플레이를 쓰는 동안 CLI 송수신류는 `console_busy`(종료 코드 7)로 거절된다.
+
 ```
 ┌ 안드로이드 /sdcard/… ⇪ ┬──────────────────────────────┐
 │ ▸ Download  · a.pdf ⤓ │  Back  Home  Enter      2 fps │
