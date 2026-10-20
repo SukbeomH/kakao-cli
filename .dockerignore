@@ -19,3 +19,14 @@ docs/
 **/*.db
 **/*.db-*
 **/*.sqlite*
+
+*.aar
+*.so
+*.dex
+*.class
+*.jar
+**/*.aar
+**/*.so
+**/*.dex
+**/*.class
+**/*.jar

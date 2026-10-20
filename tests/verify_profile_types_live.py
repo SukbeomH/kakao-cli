@@ -22,6 +22,9 @@ for name,source in sources.items():
     sys.modules[module.__name__]=module
     exec(compile(source,'<read-only-review:'+name+'>','exec'),module.__dict__)
 base=sys.modules['kakao_cli.baseline_db'];new=sys.modules['kakao_cli.kakaodb']
+# 과거 후속5의 평문 메타/타입 비교 범위: SQLCipher 선택 경로는 실행하지 않는다.
+if hasattr(new.Database,'_load_crypto_profiles'):
+    new.Database._load_crypto_profiles=lambda self: None
 class ReadOnlyDevice:
     adb='adb';serial='127.0.0.1:5555'
     def shell(self,command):

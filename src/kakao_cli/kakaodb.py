@@ -135,6 +135,8 @@ class Database:
         self.self_id = None
         self.names = {}
         self.open_links = {}
+        self.crypto_users, self.crypto_channels = {}, {}
+        self.crypto_available = False
         self.guard()
         own = self._query('KakaoTalk.db',
             "SELECT DISTINCT user_id FROM chat_logs WHERE json_extract(v,'$.isMine')=1")
@@ -142,6 +144,7 @@ class Database:
             self.self_id = own[0]['user_id']
         self._load_names()
         self._load_open_links()
+        self._load_crypto_profiles()
 
     def _query(self, db, sql):
         if db not in ('KakaoTalk.db', 'KakaoTalk2.db'):
@@ -213,10 +216,27 @@ class Database:
             seen.add(ident)
             self.open_links[ident] = name
 
+    def _load_crypto_profiles(self):
+        from . import profiles
+        self.crypto_users, self.crypto_channels = {}, {}
+        self.crypto_available = False
+        try:
+            self.crypto_users, self.crypto_channels = profiles.read_profiles(self.dev)
+            self.crypto_available = True
+        except profiles.ProfileUnavailable:
+            pass  # 이름만 선택적. 본문/화면 수신 경로를 바꾸지 않는다.
+
     def _sender(self, user_id, link_id=0):
         if user_id == self.self_id:
             return '나'
-        return self.names.get((link_id, user_id), self.names.get((0, user_id), 'user:' + str(user_id)))
+        scoped = self.names.get((link_id, user_id))
+        if scoped:
+            return scoped
+        if not link_id:
+            name = getattr(self, 'crypto_users', {}).get(user_id)
+            if name:
+                return name
+        return self.names.get((0, user_id), 'user:' + str(user_id))
 
     def _rooms(self):
         return self._query('KakaoTalk.db', 'SELECT * FROM chat_rooms ORDER BY last_updated_at DESC')
@@ -238,6 +258,16 @@ class Database:
             if linked:
                 return linked
         members = parse_json(r['members'], [])
+        if r['type'] == 'PlusChat':
+            candidates = getattr(self, 'crypto_channels', {}).get(r['id'], [])
+            if len(candidates) == 1:
+                user, label = candidates[0]
+                known = set(members)
+                if user not in known:
+                    known.update(row['user_id'] for row in self._query('KakaoTalk.db',
+                        'SELECT DISTINCT user_id FROM chat_logs WHERE chat_id=' + number(r['id']) + ' LIMIT 100'))
+                if user in known:
+                    return label
         names = [self._sender(m, r['link_id']) for m in members if m != self.self_id]
         if names and all(not n.startswith('user:') for n in names):
             return ', '.join(names)
