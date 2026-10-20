@@ -35,7 +35,7 @@ _kakao() {
         pull-media) _arguments $common '--new-only[incremental]' '1:dest:_files -/' ;;
         track)      _arguments $common '--interval[poll seconds]:sec' '--window[recent window]:N' ;;
         poll)       _arguments $common '--interval[poll seconds]:sec' '--limit[scan N]:N' '1:room:' ;;
-        webui)      _arguments $common '--host[bind address]:host' '--port[tcp port]:port' ;;
+        webui)      _arguments $common '--host[bind address]:host' '--port[tcp port]:port' '--allow-screen[enable screen/console on non-local bind]' '--fs-root[console local root]:path:_files -/' ;;
         *)          _arguments $common ;;
       esac ;;
   esac

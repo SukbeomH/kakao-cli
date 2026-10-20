@@ -34,7 +34,14 @@ echo "1) deploy modules to VM"
 scp -q "$ROOT/src/kakao_cli/worker.py" "$ROOT/src/kakao_cli/webui.py" \
        "$ROOT/src/kakao_cli/tui.py" "$ROOT/src/kakao_cli/cli.py" \
        "$ROOT/src/kakao_cli/driver.py" "$ROOT/src/kakao_cli/adb.py" \
+       "$ROOT/src/kakao_cli/screen.py" "$ROOT/src/kakao_cli/fs.py" \
        "$VM:$REMOTE/src/kakao_cli/" || fail "scp failed"
+
+echo "1b) bump the self-chat to the top of the chat list (memo to self)"
+# the room list only shows the visible rows; real conversations can push the
+# self-chat off-screen, so send one safe memo to bring it back to the top
+ssh "$VM" "cd $REMOTE && PYTHONPATH=src python3 -m kakao_cli memo 'e2e-setup-$(date +%H%M%S)' \
+  --serial $SER --json" | grep -q '"ok": true' || fail "self-chat bump (memo) failed"
 
 echo "2) start webui on VM (0.0.0.0:$PORT)"
 ssh "$VM" "tmux kill-session -t $SESS 2>/dev/null; \

@@ -30,7 +30,7 @@ _kakao() {
         pull-media)  opts+=" --new-only" ;;
         track)       opts+=" --interval --window" ;;
         poll)        opts+=" --interval --limit" ;;
-        webui)       opts+=" --host --port" ;;
+        webui)       opts+=" --host --port --allow-screen --fs-root" ;;
     esac
 
     # file-arg completion

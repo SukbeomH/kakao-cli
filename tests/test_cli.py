@@ -357,3 +357,141 @@ def test_webui_export_and_download(tmp_path):
             assert "attachment" in r.headers.get("Content-Disposition", "")
     finally:
         httpd.shutdown()
+
+
+# --- console: file manager + keyboard passthrough ---
+def test_fs_parse_and_quote():
+    sys.path.insert(0, "src")
+    from kakao_cli.fs import parse_stat_lines, shq, android_parent, unique_name
+    out = ("regular file|12|100|/sdcard/a b|c.txt\n"
+           "directory|4096|200|/sdcard/Download\n"
+           "find: '/sdcard/x': Permission denied\n"
+           "junk line\n")
+    items = parse_stat_lines(out)
+    assert [i["name"] for i in items] == ["Download", "a b|c.txt"]   # dirs first, '|' in name kept
+    assert items[0]["type"] == "dir" and items[1]["size"] == 12
+    assert shq("it's") == "'it'\\''s'"
+    assert android_parent("/sdcard/Download/") == "/sdcard/"
+    assert android_parent("/sdcard") == "/"
+    taken = {"a.txt", "a-1.txt"}
+    assert unique_name("a.txt", taken.__contains__) == "a-2.txt"
+    assert unique_name("b.txt", taken.__contains__) == "b.txt"
+
+
+def test_fs_local_root_containment(tmp_path):
+    import os
+    sys.path.insert(0, "src")
+    from kakao_cli.fs import LocalRoot
+    root = tmp_path / "root"; (root / "sub").mkdir(parents=True)
+    (root / "f.txt").write_text("x")
+    outside = tmp_path / "secret"; outside.mkdir()
+    os.symlink(outside, root / "escape")              # symlink pointing outside
+    lr = LocalRoot(str(root))
+    assert lr.resolve("sub") == str((root / "sub").resolve())
+    assert lr.resolve("../secret") is None
+    assert lr.resolve("escape") is None
+    assert lr.resolve(str(outside)) is None
+    names = [i["name"] for i in lr.list("")]
+    assert names == ["sub", "f.txt"]                   # escape symlink hidden
+    assert lr.list("../") is None
+
+
+class _FakeDev:
+    def __init__(self, files):
+        self.files = dict(files)          # android path -> bytes
+        self.pushed = []
+        self.cmds = []
+
+    def shell(self, cmd):
+        self.cmds.append(cmd)
+        if cmd.startswith("find "):
+            return ("directory|4096|1|/sdcard/Download\n"
+                    "regular file|3|2|/sdcard/hello.txt\n")
+        if cmd.startswith("test -d"):
+            return ""
+        if cmd.startswith("test -e"):
+            return "Y" if any(p in cmd for p in self.files) else ""
+        return ""
+
+    def pull(self, src, dst):
+        with open(dst, "wb") as f:
+            f.write(self.files[src])
+
+    def push(self, src, dst):
+        self.pushed.append((src, dst))
+        self.files[dst] = open(src, "rb").read()
+
+
+def _console_server(tmp_path, enabled=True, fake=None):
+    import threading, types
+    sys.path.insert(0, "src")
+    from kakao_cli import webui
+    worker = _StubWorker()
+    worker.d = types.SimpleNamespace(dev=fake)
+    httpd = webui.serve(worker, "127.0.0.1", 0, screen_enabled=enabled, fs_root=str(tmp_path))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd, worker, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+
+def _wait_job(base, jid):
+    for _ in range(100):
+        c, b = _http("GET", base + "/api/fs/job/" + jid)
+        j = _json.loads(b)
+        if j.get("state") in ("done", "error"):
+            return j
+        time.sleep(0.05)
+    raise AssertionError("job never finished")
+
+
+def test_console_disabled_blocks(tmp_path):
+    httpd, _w, base = _console_server(tmp_path, enabled=False, fake=_FakeDev({}))
+    try:
+        assert _http("GET", base + "/api/fs/local")[0] == 403
+        assert _http("GET", base + "/api/fs/android")[0] == 403
+        assert _http("POST", base + "/api/fs/pull", {"src": "/sdcard/x", "dst": ""})[0] == 403
+    finally:
+        httpd.shutdown()
+
+
+def test_console_listing_and_copy(tmp_path):
+    (tmp_path / "up.txt").write_bytes(b"UPLOAD")
+    (tmp_path / "hello.txt").write_bytes(b"old")       # forces a non-overwriting name
+    fake = _FakeDev({"/sdcard/hello.txt": b"HEY", "/sdcard/Download/up.txt": b"taken"})
+    httpd, worker, base = _console_server(tmp_path, fake=fake)
+    try:
+        c, b = _http("GET", base + "/api/fs/android?path=/sdcard")
+        j = _json.loads(b)
+        assert c == 200 and j["path"] == "/sdcard/" and j["parent"] == "/"
+        assert [i["name"] for i in j["items"]] == ["Download", "hello.txt"]
+        c, b = _http("GET", base + "/api/fs/local")
+        assert c == 200 and "up.txt" in [i["name"] for i in _json.loads(b)["items"]]
+        assert _http("GET", base + "/api/fs/local?path=../")[0] == 404
+        # pull android → local root: existing hello.txt is NOT overwritten
+        c, b = _http("POST", base + "/api/fs/pull", {"src": "/sdcard/hello.txt", "dst": ""})
+        assert c == 202
+        j = _wait_job(base, _json.loads(b)["id"])
+        assert j["state"] == "done" and j["name"] == "hello-1.txt"
+        assert (tmp_path / "hello-1.txt").read_bytes() == b"HEY"
+        assert (tmp_path / "hello.txt").read_bytes() == b"old"
+        # push local → android dir: taken name gets a suffix
+        c, b = _http("POST", base + "/api/fs/push", {"src": "up.txt", "dst": "/sdcard/Download"})
+        j = _wait_job(base, _json.loads(b)["id"])
+        assert j["state"] == "done" and j["dst"] == "/sdcard/Download/up-1.txt"
+        # escapes are refused up front
+        assert _http("POST", base + "/api/fs/push", {"src": "../x", "dst": "/sdcard/"})[0] == 400
+        assert _http("POST", base + "/api/fs/pull", {"src": "rel", "dst": ""})[0] == 400
+    finally:
+        httpd.shutdown()
+
+
+def test_console_keycode_allowlist(tmp_path):
+    sys.path.insert(0, "src")
+    from kakao_cli.screen import ScreenBuffer
+    httpd, worker, base = _console_server(tmp_path, fake=_FakeDev({}))
+    try:
+        assert _http("POST", base + "/api/screen/key", {"code": 67})[0] == 200
+        assert ("key", 67) in worker.puts
+        assert _http("POST", base + "/api/screen/key", {"code": 26})[0] == 400   # POWER: not allowed
+        assert _http("POST", base + "/api/screen/key", {"code": True})[0] == 400
+    finally:
+        httpd.shutdown()

@@ -26,7 +26,8 @@ trap cleanup EXIT
 echo "1) deploy"
 scp -q "$ROOT/src/kakao_cli/screen.py" "$ROOT/src/kakao_cli/worker.py" \
        "$ROOT/src/kakao_cli/webui.py" "$ROOT/src/kakao_cli/adb.py" \
-       "$ROOT/src/kakao_cli/cli.py" "$VM:$REMOTE/src/kakao_cli/" || fail "scp failed"
+       "$ROOT/src/kakao_cli/cli.py" "$ROOT/src/kakao_cli/fs.py" \
+       "$ROOT/src/kakao_cli/driver.py" "$VM:$REMOTE/src/kakao_cli/" || fail "scp failed"
 scp -q "$ROOT/tests/webui_screen_check.py" "$VM:/tmp/webui_screen_check.py" || fail "scp check failed"
 
 echo "2) start webui --allow-screen on $PORT"

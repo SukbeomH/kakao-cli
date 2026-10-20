@@ -101,10 +101,13 @@ class Worker(threading.Thread):
         elif op == "swipe":
             self.d.dev.swipe(*cmd[1:])
         elif op == "key":
-            code = {"back": "KEYCODE_BACK", "home": "KEYCODE_HOME",
-                    "enter": "KEYCODE_ENTER"}.get(cmd[1])
-            if code:
-                self.d.dev.keyevent(code)
+            if isinstance(cmd[1], int):              # console keyboard passthrough
+                self.d.dev.keyevent(cmd[1])
+            else:
+                code = {"back": "KEYCODE_BACK", "home": "KEYCODE_HOME",
+                        "enter": "KEYCODE_ENTER"}.get(cmd[1])
+                if code:
+                    self.d.dev.keyevent(code)
         elif op == "screentext":
             self.d.dev.type_text(cmd[1])
         elif op == "poll":

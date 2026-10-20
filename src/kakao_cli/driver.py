@@ -297,7 +297,10 @@ class Driver:
                 sender = (leafs.get("nickname") or "").strip()
                 # is_mine by geometry: my bubbles hug the right margin, others the
                 # left column (row bounds are full-width, so use the bubble node)
-                mc = nodes.get("message_container") or nodes.get("bubble")
+                # (Elements without children are falsy — compare to None explicitly)
+                mc = nodes.get("message_container")
+                if mc is None:
+                    mc = nodes.get("bubble")
                 is_mine = False
                 if mc is not None and screen_w:
                     is_mine = _bounds_of(mc)[2] >= screen_w * 0.93
@@ -305,7 +308,8 @@ class Driver:
                 if "txt_size" in leafs:                       # file/document
                     name = (leafs.get("message") or leafs.get("bubble") or "").strip()
                     out.append({"kind": "file", "text": name or "[File]", "name": name,
-                                "bounds": _bounds_of(nodes.get("bubble") or row), **meta})
+                                "bounds": _bounds_of(nodes["bubble"] if "bubble" in nodes else row),
+                                **meta})
                 elif "image" in leafs:
                     out.append({"kind": "photo", "text": "[Photo]",
                                 "bounds": _bounds_of(nodes["image"]), **meta})

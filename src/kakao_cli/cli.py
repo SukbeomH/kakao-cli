@@ -130,7 +130,8 @@ def cmd_tui(args) -> int:
 def cmd_webui(args) -> int:
     from . import webui
     webui.run(serial=args.serial, addr=args.addr, adb=args.adb,
-              host=args.host, port=args.port, allow_screen=args.allow_screen)
+              host=args.host, port=args.port, allow_screen=args.allow_screen,
+              fs_root=args.fs_root)
     return 0
 
 
@@ -236,6 +237,9 @@ def build_parser():
             sp.add_argument("--allow-screen", action="store_true",
                             help="enable the live screen view/control on a non-local --host "
                                  "(full-account remote control; off by default when not on 127.0.0.1)")
+            sp.add_argument("--fs-root", default="~", metavar="PATH",
+                            help="local file-manager root in the console (default: ~); "
+                                 "the pane cannot leave it")
         sp.set_defaults(func=fn)
     return ap
 

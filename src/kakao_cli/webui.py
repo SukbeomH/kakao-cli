@@ -26,6 +26,22 @@ from urllib.parse import parse_qs, unquote
 from .adb import connect
 from .worker import Worker
 from .screen import ScreenBuffer, view_to_device
+from .fs import (LocalRoot, shq, parse_stat_lines, android_list_cmd,
+                 android_parent, unique_name)
+
+# Android keycodes the console keyboard may forward (everything printable goes
+# through ADBKeyBoard text instead). Anything else is rejected.
+KEYCODES = {
+    3,          # HOME
+    4,          # BACK
+    19, 20, 21, 22,   # DPAD up/down/left/right (arrow keys)
+    61,         # TAB
+    66,         # ENTER
+    67,         # DEL (backspace)
+    92, 93,     # PAGE_UP / PAGE_DOWN
+    112,        # FORWARD_DEL
+    122, 123,   # MOVE_HOME / MOVE_END
+}
 
 
 class State:
@@ -159,7 +175,61 @@ def _safe_name(raw: str) -> str:
 
 
 def make_handler(worker: Worker, state: State, tmpdir: str,
-                 screen: ScreenBuffer, screen_enabled: bool):
+                 screen: ScreenBuffer, screen_enabled: bool, fsroot: LocalRoot):
+    # console file transfers run in their own threads (a large push must not
+    # freeze the worker's captures/taps); adb's server serializes transports
+    jobs: dict[str, dict] = {}
+    jobs_lock = threading.Lock()
+
+    def dev():
+        return getattr(getattr(worker, "d", None), "dev", None)
+
+    def job_set(jid, **kw):
+        with jobs_lock:
+            jobs.setdefault(jid, {}).update(kw)
+
+    def run_job(jid, fn, *args):
+        def target():
+            try:
+                job_set(jid, state="done", **(fn(*args) or {}))
+            except Exception as e:  # surface the reason in the jobs strip
+                job_set(jid, state="error", error=str(e))
+        threading.Thread(target=target, daemon=True).start()
+
+    def pull_job(src, dst_rel):
+        real_dir = fsroot.resolve(dst_rel)
+        if not real_dir or not os.path.isdir(real_dir):
+            raise ValueError("local target dir not found")
+        d = dev()
+        if "D" in d.shell("test -d %s && echo D" % shq(src)):
+            raise ValueError("files only (folders are not copied)")
+        name = src.rstrip("/").rsplit("/", 1)[-1] or "file"
+        name = unique_name(name, lambda n: os.path.exists(os.path.join(real_dir, n)))
+        target = os.path.join(real_dir, name)
+        d.pull(src, target)
+        if not os.path.splitext(name)[1]:          # content blobs have no ext
+            from .media import _sniff
+            ext = _sniff(target)
+            if ext != "bin":
+                better = unique_name(name + "." + ext,
+                                     lambda n: os.path.exists(os.path.join(real_dir, n)))
+                os.replace(target, os.path.join(real_dir, better))
+                name = better
+        return {"name": name, "dst": fsroot.rel(os.path.join(real_dir, name))}
+
+    def push_job(src_rel, dst_dir):
+        real = fsroot.resolve(src_rel)
+        if not real or not os.path.isfile(real):
+            raise ValueError("files only (local source not found)")
+        d = dev()
+        base = dst_dir if dst_dir.endswith("/") else dst_dir + "/"
+        name = unique_name(os.path.basename(real),
+                           lambda n: "Y" in d.shell("test -e %s && echo Y" % shq(base + n)))
+        d.push(real, base + name)
+        d.shell("am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d %s"
+                % shq("file://" + base + name))
+        return {"name": name, "dst": base + name}
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "kakao-cli-webui"
 
@@ -249,6 +319,43 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(frame)
+            elif path.startswith("/api/fs/"):
+                self._fs_get(path)
+            else:
+                self._json(404, {"error": "not found"})
+
+        def _fs_get(self, path):
+            if not screen_enabled:
+                return self._json(403, {"error": "console disabled"})
+            q = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            arg = (q.get("path") or [""])[0]
+            if path == "/api/fs/android":
+                p = arg or "/sdcard/"
+                if not p.startswith("/"):
+                    return self._json(400, {"error": "absolute path required"})
+                d = dev()
+                if d is None:
+                    return self._json(503, {"error": "no device"})
+                out = d.shell(android_list_cmd(p))
+                items = parse_stat_lines(out)
+                errs = [l for l in out.splitlines() if l.startswith(("find:", "stat:"))]
+                self._json(200, {"path": p if p.endswith("/") else p + "/",
+                                 "parent": android_parent(p), "items": items,
+                                 "error": errs[0] if (errs and not items) else None})
+            elif path == "/api/fs/local":
+                items = fsroot.list(arg)
+                if items is None:
+                    return self._json(404, {"error": "not found or outside root"})
+                real = fsroot.resolve(arg)
+                parent = fsroot.rel(os.path.dirname(real)) if real != fsroot.root else None
+                self._json(200, {"path": fsroot.rel(real), "parent": parent,
+                                 "root": fsroot.root, "items": items})
+            elif path.startswith("/api/fs/job/"):
+                with jobs_lock:
+                    j = dict(jobs.get(path[len("/api/fs/job/"):], {}))
+                if not j:
+                    return self._json(404, {"error": "unknown job"})
+                self._json(200, j)
             else:
                 self._json(404, {"error": "not found"})
 
@@ -323,16 +430,49 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._json(200, {"ok": True})
             elif self.path.startswith("/api/screen/"):
                 self._screen_control()
+            elif self.path in ("/api/fs/pull", "/api/fs/push"):
+                self._fs_transfer()
             else:
                 self._json(404, {"error": "not found"})
 
-        def _screen_control(self):
+        def _guard(self) -> bool:
+            """Shared gate for every console control: enabled + JSON + same-origin."""
             if not screen_enabled:
-                return self._json(403, {"error": "screen disabled"})
+                self._json(403, {"error": "console disabled"}); return False
             if "application/json" not in (self.headers.get("Content-Type") or ""):
-                return self._json(415, {"error": "json only"})
+                self._json(415, {"error": "json only"}); return False
             if not self._csrf_ok():
-                return self._json(403, {"error": "cross-origin blocked"})
+                self._json(403, {"error": "cross-origin blocked"}); return False
+            return True
+
+        def _fs_transfer(self):
+            if not self._guard():
+                return
+            if dev() is None:
+                return self._json(503, {"error": "no device"})
+            body = self._read_json()
+            src, dst = str(body.get("src") or ""), str(body.get("dst") or "")
+            import uuid
+            jid = uuid.uuid4().hex
+            if self.path == "/api/fs/pull":           # android file → local dir
+                if not src.startswith("/"):
+                    return self._json(400, {"error": "android src must be absolute"})
+                if fsroot.resolve(dst) is None:
+                    return self._json(400, {"error": "local dst outside root"})
+                job_set(jid, state="running", op="pull", src=src)
+                run_job(jid, pull_job, src, dst)
+            else:                                     # local file → android dir
+                if fsroot.resolve(src) is None:
+                    return self._json(400, {"error": "local src outside root"})
+                if not dst.startswith("/"):
+                    return self._json(400, {"error": "android dst must be absolute"})
+                job_set(jid, state="running", op="push", src=src)
+                run_job(jid, push_job, src, dst)
+            self._json(202, {"id": jid})
+
+        def _screen_control(self):
+            if not self._guard():
+                return
             body = self._read_json()
             op = self.path[len("/api/screen/"):]
             _seq, frame, w, h = screen.get()
@@ -351,10 +491,13 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 worker.put("swipe", x1, y1, x2, y2, ms)
                 self._json(200, {"ok": True})
             elif op == "key":
-                name = body.get("name")
-                if name not in ("back", "home", "enter"):
+                name, code = body.get("name"), body.get("code")
+                if name in ("back", "home", "enter"):
+                    worker.put("key", name)
+                elif isinstance(code, int) and not isinstance(code, bool) and code in KEYCODES:
+                    worker.put("key", code)       # keyboard passthrough (allow-listed)
+                else:
                     return self._json(400, {"error": "bad key"})
-                worker.put("key", name)
                 self._json(200, {"ok": True})
             elif op == "text":
                 text = body.get("text") or ""
@@ -376,7 +519,8 @@ def _num(v, default=0):
 
 
 def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
-          screen: ScreenBuffer = None, screen_enabled: bool = True) -> ThreadingHTTPServer:
+          screen: ScreenBuffer = None, screen_enabled: bool = True,
+          fs_root: str = "~") -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
     if tmpdir is None:
@@ -385,7 +529,8 @@ def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
         screen = ScreenBuffer()
     threading.Thread(target=_pump, args=(worker, state), daemon=True).start()
     httpd = ThreadingHTTPServer(
-        (host, port), make_handler(worker, state, tmpdir, screen, screen_enabled))
+        (host, port), make_handler(worker, state, tmpdir, screen, screen_enabled,
+                                   LocalRoot(fs_root)))
     httpd.daemon_threads = True
     return httpd
 
@@ -394,20 +539,22 @@ def _is_local(host: str) -> bool:
     return host in ("127.0.0.1", "localhost", "::1", "")
 
 
-def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_screen=False):
+def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_screen=False,
+        fs_root="~"):
     dev = connect(serial, addr, adb=adb)
     tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     screen = ScreenBuffer()
-    # the screen view is full-account remote control; off by default on non-local
-    # binds unless explicitly allowed
+    # the screen view / console is full-account remote control; off by default on
+    # non-local binds unless explicitly allowed
     screen_enabled = _is_local(host) or allow_screen
     worker = Worker(dev, export_dir=tmpdir, screen=screen)
     worker.start()
     httpd = serve(worker, host, port, tmpdir=tmpdir, screen=screen,
-                  screen_enabled=screen_enabled)
+                  screen_enabled=screen_enabled, fs_root=fs_root)
     shown = host if host not in ("0.0.0.0", "") else "<vm-ip>"
     print(f"kakao-cli webui on http://{shown}:{port}  (Ctrl-C to stop)")
-    print(f"  screen view/control: {'ON' if screen_enabled else 'OFF'}")
+    print(f"  screen view / console (files): {'ON' if screen_enabled else 'OFF'}"
+          f"  — local file root: {LocalRoot(fs_root).root}")
     if not _is_local(host):
         print("  WARNING: bound to all interfaces with no auth — anyone on the "
               "network can control this KakaoTalk account.")
@@ -556,8 +703,56 @@ PAGE = r"""<!doctype html>
   .panel .help b{color:var(--accent)}
   .panel h3{margin:0;padding:10px 12px;color:var(--accent);border-bottom:1px solid var(--line)}
 
+  /* mode switch (채팅 | 콘솔) */
+  #header{display:flex;align-items:center;gap:10px}
+  #header .hint{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modes{display:flex;gap:2px;flex:0 0 auto}
+  .modes button{padding:0 10px;border-radius:3px;color:var(--dim)}
+  .modes button.on{background:var(--sel);color:var(--selfg)}
+  .modes button:disabled{opacity:.4;cursor:default}
+
+  /* console: file managers (left, split) + live device screen (center) */
+  .console{flex:1 1 auto;display:none;min-height:0}
+  body[data-mode="console"] .main{display:none}
+  body[data-mode="console"] .console{display:flex}
+  .side{flex:0 0 34%;max-width:460px;min-width:260px;display:flex;flex-direction:column;
+    border-right:1px solid var(--line);min-height:0}
+  .fpane{flex:1 1 50%;display:flex;flex-direction:column;min-height:0;
+    border-bottom:1px solid var(--line)}
+  .fhead{display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--bar)}
+  .fhead b{color:var(--accent);white-space:nowrap;font-size:13px}
+  .fhead input{flex:1;min-width:0;background:transparent;border:1px solid var(--line);
+    border-radius:3px;color:var(--fg);font-family:inherit;font-size:13px;padding:2px 6px;outline:none}
+  .flist{flex:1 1 auto;overflow-y:auto;font-size:13px}
+  .frow{display:flex;gap:8px;padding:3px 10px;cursor:pointer;white-space:nowrap}
+  .frow:hover{background:var(--line)}
+  .frow .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .frow .fs{color:var(--dim)}
+  .frow.dir .fn{color:var(--accent)}
+  .frow.sel{background:var(--sel);color:var(--selfg)}
+  .frow.sel .fn,.frow.sel .fs{color:var(--selfg)}
+  .ffoot{display:flex;gap:6px;padding:4px 8px;border-top:1px solid var(--line);align-items:center}
+  .ffoot .fsel{flex:1;min-width:0;color:var(--dim);font-size:12px;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .ffoot button{color:var(--accent);border:1px solid var(--line);border-radius:3px;
+    padding:3px 10px;white-space:nowrap}
+  .ffoot button:disabled{color:var(--dim);cursor:default}
+  .ferr{color:#f7768e;padding:6px 10px;font-size:12px;white-space:normal}
+  .jobs{flex:0 0 auto;max-height:22%;overflow-y:auto;font-size:12px;padding:2px 8px}
+  .job{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .job.running{color:var(--unread)} .job.done{color:var(--me)} .job.error{color:#f7768e}
+  .center{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;padding:6px}
+  .center .scrwrap{position:relative}
+  .center .scrwrap.kbon{box-shadow:0 0 0 2px var(--accent) inset}
+  .kbhint{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #kbcap{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;
+    padding:0;resize:none;font-size:16px}
+
   /* phones / narrow: single-screen navigation (list <-> conversation) */
   @media (max-width:720px){
+    body[data-mode="console"] .console{flex-direction:column}
+    .side{flex:1 1 45%;max-width:none;min-width:0;border-right:none}
+    .center{flex:0 0 55%;order:-1}
     #header{display:none}
     .list{flex:1 1 auto;max-width:none;min-width:0;border-right:none}
     .pane{flex:1 1 auto}
@@ -571,8 +766,12 @@ PAGE = r"""<!doctype html>
   }
   @media (hover:none){ .msg.dl:active{opacity:.6} .row:active{background:var(--line)} }
 </style></head>
-<body data-view="list">
-  <div class="bar" id="header"></div>
+<body data-view="list" data-mode="chat">
+  <div class="bar" id="header"><span class="hint" id="hint"></span>
+    <span class="modes" role="tablist" aria-label="모드">
+      <button id="m-chat" class="on" role="tab">채팅</button>
+      <button id="m-console" role="tab" title="콘솔: 기기 화면 + 파일 (c)">콘솔</button>
+    </span></div>
   <div class="banner" id="loginbanner" hidden>
     로그인이 필요합니다 — <button id="loginopen">화면 열기</button>
   </div>
@@ -597,8 +796,38 @@ PAGE = r"""<!doctype html>
       </div>
     </div>
   </div>
+  <div class="console" id="console">
+    <div class="side">
+      <div class="fpane" id="fp-android">
+        <div class="fhead"><b>안드로이드</b>
+          <input id="fpath-android" spellcheck="false" autocomplete="off" aria-label="안드로이드 경로"></div>
+        <div class="flist" id="flist-android" role="listbox" aria-label="안드로이드 파일"></div>
+        <div class="ffoot"><span class="fsel" id="fsel-android">파일 선택</span>
+          <button id="pull" disabled title="선택 파일을 아래 로컬 폴더로 복사">↓ 로컬로 복사</button></div>
+      </div>
+      <div class="fpane" id="fp-local">
+        <div class="fhead"><b>로컬(VM)</b>
+          <input id="fpath-local" spellcheck="false" autocomplete="off" aria-label="로컬 경로"
+                 placeholder="(루트)"></div>
+        <div class="flist" id="flist-local" role="listbox" aria-label="로컬 파일"></div>
+        <div class="ffoot"><span class="fsel" id="fsel-local">파일 선택</span>
+          <button id="push" disabled title="선택 파일을 위 안드로이드 폴더로 복사">↑ 안드로이드로 복사</button></div>
+      </div>
+      <div class="jobs" id="jobs" aria-live="polite"></div>
+    </div>
+    <div class="center">
+      <div class="scrbar">
+        <button id="ckback">Back</button><button id="ckhome">Home</button><button id="ckenter">Enter</button>
+        <span class="kbhint" id="kbhint">화면을 클릭하면 키보드가 기기로 갑니다 · Esc 해제</span>
+        <span class="fps" id="cfps"></span>
+      </div>
+      <div class="scrwrap" id="conwrap"><textarea id="kbcap" autocomplete="off" spellcheck="false"
+        aria-label="기기 키보드 입력"></textarea></div>
+    </div>
+  </div>
   <div class="bar statusbar" id="statusbar">
     <span id="status" role="status">starting …</span>
+    <button class="scrbtn" id="mconsole" title="콘솔/채팅 전환 (c)">⌨ 콘솔</button>
     <button class="scrbtn" id="scrbtn2" title="기기 화면 (g)" aria-label="기기 화면">⧉ 화면</button>
   </div>
 
@@ -651,12 +880,14 @@ const HELP =
   '<b>m</b>  현재 방 조용히(알림/배지 제외) 토글\n' +
   '<b>n</b>  탭이 숨겨졌을 때 알림 켜기/끄기\n' +
   '<b>g</b>  기기 화면 보기·조작(로그인용)\n' +
+  '<b>c</b>  콘솔 ↔ 채팅 전환 (콘솔: 기기 화면 + 파일 복사)\n' +
+  '  콘솔에서 화면 클릭 → 키보드가 기기로 (한글 OK), <b>Esc</b> 해제\n' +
   '<b>?</b>  이 도움말';
 const $ = id => document.getElementById(id);
-$("header").innerHTML = HINT;
+$("hint").innerHTML = HINT;
 
 let st = {seq:-1, rooms:[], room:null, messages:[], status:""};
-let sel = 0, focus = "list", view = "list";
+let sel = 0, focus = "list", view = "list", mode = "chat";
 const input = $("input");
 
 const esc = s => (s||"").replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -935,6 +1166,16 @@ document.addEventListener("keydown", (e)=>{
   if($("switcher").classList.contains("show")){ switcherKey(e); return; }
   if($("helpovl").classList.contains("show")){ if(e.key==="Escape"||e.key==="?") closeOverlays(); return; }
 
+  // other text fields (console path boxes) type normally; kbcap handles itself
+  const t = e.target;
+  if(t!==input && (t.tagName==="INPUT" || t.tagName==="TEXTAREA")) return;
+  // console mode: only the mode/help keys — no chat navigation
+  if(mode==="console"){
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    if(e.key==="c"){ e.preventDefault(); setMode("chat"); }
+    else if(e.key==="?"){ e.preventDefault(); openHelp(); }
+    return;
+  }
   // quick switcher / help work from anywhere
   if((e.key==="k"||e.key==="K") && (e.ctrlKey||e.metaKey)){ e.preventDefault(); openSwitcher(); return; }
   // room navigation with Alt works even while typing
@@ -966,6 +1207,7 @@ document.addEventListener("keydown", (e)=>{
   else if(e.key==="m"){ toggleQuiet(st.room); }
   else if(e.key==="n"){ toggleNotify(); }
   else if(e.key==="g"){ openScreen(); }
+  else if(e.key==="c"){ e.preventDefault(); setMode("console"); }
 });
 input.addEventListener("focus", ()=>{ if(focus!=="input"){ focus="input"; render(); }});
 input.addEventListener("input", autogrow);
@@ -1032,29 +1274,38 @@ const pane = document.querySelector(".pane");
 ["dragleave","drop"].forEach(ev=> pane.addEventListener(ev, e=>{ e.preventDefault(); $("inputline").classList.remove("drop"); }));
 pane.addEventListener("drop", e=>{ const f=e.dataTransfer && e.dataTransfer.files[0]; if(f) uploadFile(f); });
 
-// ---- live device screen view/control (for re-login) ----
-let scrOn=false, fpsCount=0, fpsT=Date.now(), scrSeq=0;
-function openScreen(){ $("screenovl").classList.add("show"); if(!scrOn){ scrOn=true; scrSeq=0; pollFrame(); } }
-function closeScreen(){ scrOn=false; $("screenovl").classList.remove("show"); }
+// ---- live device screen view/control (overlay for re-login + console center) ----
+// One <img id=scr> and one frame loop; the element is re-parented between the
+// overlay and the console so frames are never fetched twice.
+let frameLoop=false, fpsCount=0, fpsT=Date.now(), scrSeq=0;
+const screenWanted = () => $("screenovl").classList.contains("show") || mode==="console";
+function startFrames(){ if(!frameLoop){ frameLoop=true; scrSeq=0; pollFrame(); } }
+function openScreen(){
+  if(mode==="console"){ $("kbcap").focus({preventScroll:true}); return; }
+  document.querySelector("#screenovl .scrwrap").appendChild($("scr"));
+  $("screenovl").classList.add("show"); startFrames();
+}
+function closeScreen(){ $("screenovl").classList.remove("show"); }
 // poll the tiny /info (keeps the viewer alive) and only fetch a new frame when the
 // capture seq changed — avoids re-downloading identical frames (mobile bandwidth)
 function pollFrame(){
-  if(!scrOn) return;
+  if(!screenWanted()){ frameLoop=false; return; }
   fetch("/api/screen/info").then(r=>r.json()).then(j=>{
-    if(!scrOn) return;
+    if(!screenWanted()){ frameLoop=false; return; }
     if(j.seq && j.seq !== scrSeq){
       scrSeq = j.seq;
       const nx = new Image();
       nx.onload = ()=>{
-        if(!scrOn) return;
+        if(!screenWanted()) return;
         $("scr").src = nx.src;
         fpsCount++; const now=Date.now();
-        if(now-fpsT >= 1000){ $("fps").textContent = fpsCount+" fps"; fpsCount=0; fpsT=now; }
+        if(now-fpsT >= 1000){ $("fps").textContent = $("cfps").textContent = fpsCount+" fps";
+          fpsCount=0; fpsT=now; }
       };
       nx.src = "/api/screen/frame?seq=" + j.seq;
     }
     setTimeout(pollFrame, 250);
-  }).catch(()=>{ if(scrOn) setTimeout(pollFrame, 600); });
+  }).catch(()=>{ if(screenWanted()) setTimeout(pollFrame, 600); else frameLoop=false; });
 }
 async function scrPost(path, body){
   try{ await fetch("/api/screen/"+path, {method:"POST",
@@ -1063,7 +1314,8 @@ async function scrPost(path, body){
 const scr = $("scr");
 let pd = null;
 scr.addEventListener("pointerdown", e=>{ e.preventDefault(); pd={x:e.offsetX,y:e.offsetY,t:Date.now()};
-  try{ scr.setPointerCapture(e.pointerId); }catch(_){} });
+  try{ scr.setPointerCapture(e.pointerId); }catch(_){}
+  if(mode==="console") $("kbcap").focus({preventScroll:true}); });  // keyboard → device
 scr.addEventListener("pointerup", e=>{
   if(!pd) return;
   const ew=scr.clientWidth, eh=scr.clientHeight;
@@ -1085,6 +1337,175 @@ $("kbenter").onclick = ()=> scrPost("key",{name:"enter"});
 $("scrsend").onclick = ()=>{ const t=$("scrtext").value; if(t){ scrPost("text",{text:t}); $("scrtext").value=""; } };
 $("scrtext").addEventListener("keydown", e=>{ if(e.key==="Enter" && !e.isComposing && e.keyCode!==229){ e.preventDefault(); $("scrsend").click(); } e.stopPropagation(); });
 document.querySelectorAll(".ovl").forEach(o=> o.addEventListener("click", e=>{ if(e.target===o){ if(o.id==="screenovl") closeScreen(); else closeOverlays(); } }));
+
+// ================= console mode: device screen + file managers =================
+let consoleOK = true;
+function setMode(m, save=true){
+  if(m==="console" && !consoleOK){ setStatus(" 콘솔 비활성 — 비로컬 바인드는 --allow-screen 필요"); return; }
+  mode = m;
+  document.body.dataset.mode = m;
+  $("m-chat").classList.toggle("on", m==="chat");
+  $("m-console").classList.toggle("on", m==="console");
+  $("m-chat").setAttribute("aria-selected", m==="chat"); $("m-console").setAttribute("aria-selected", m==="console");
+  $("mconsole").textContent = m==="console" ? "💬 채팅" : "⌨ 콘솔";
+  if(save) lsSet("kakao.mode", m);
+  history.replaceState(history.state, "", m==="console" ? "#console" : location.pathname);
+  if(m==="console"){
+    closeScreen();
+    $("conwrap").appendChild($("scr"));
+    startFrames();
+    if(!fp.android.loaded) loadPane("android", fp.android.path);
+    if(!fp.local.loaded) loadPane("local", fp.local.path);
+    setStatus(" 콘솔 — 열려 있는 동안 채팅 갱신은 멈춥니다");
+  }
+}
+$("m-chat").onclick = ()=> setMode("chat");
+$("m-console").onclick = ()=> setMode("console");
+$("mconsole").onclick = ()=> setMode(mode==="console" ? "chat" : "console");
+$("ckback").onclick = ()=> scrPost("key",{name:"back"});
+$("ckhome").onclick = ()=> scrPost("key",{name:"home"});
+$("ckenter").onclick = ()=> scrPost("key",{name:"enter"});
+
+// ---- file managers (top: android, bottom: local VM disk) — copy only ----
+const fp = {
+  android: {path:"/sdcard/", parent:null, items:[], sel:null, loaded:false},
+  local:   {path:"",         parent:null, items:[], sel:null, loaded:false},
+};
+function hsize(n){
+  if(n<1024) return n+"B";
+  if(n<1048576) return (n/1024).toFixed(1)+"K";
+  if(n<1073741824) return (n/1048576).toFixed(1)+"M";
+  return (n/1073741824).toFixed(1)+"G";
+}
+async function loadPane(which, path){
+  let r, j;
+  try{
+    r = await fetch("/api/fs/"+which+"?path="+encodeURIComponent(path||""));
+    j = await r.json();
+  }catch(e){ renderPane(which, "연결 실패"); return; }
+  if(!r.ok){ renderPane(which, j.error || ("HTTP "+r.status)); return; }
+  Object.assign(fp[which], {path:j.path, parent:j.parent, items:j.items, sel:null, loaded:true});
+  if(which==="local") $("fpath-local").title = j.root + (j.path ? "/"+j.path : "");
+  renderPane(which, j.error);
+}
+function navigable(which, it){ return it.type==="dir" || (which==="android" && it.type==="link"); }
+function renderPane(which, err){
+  const P = fp[which], list = $("flist-"+which);
+  $("fpath-"+which).value = P.path || "";
+  list.innerHTML = "";
+  if(err){ const d=document.createElement("div"); d.className="ferr"; d.textContent=err; list.appendChild(d); }
+  const atTop = which==="android" ? (P.path==="/" || P.parent==null) : (P.parent==null);
+  if(!atTop){
+    const up=document.createElement("div"); up.className="frow dir"; up.setAttribute("role","option");
+    up.innerHTML='<span class="fn">▴ ..</span><span class="fs"></span>';
+    up.onclick=()=> loadPane(which, P.parent); list.appendChild(up);
+  }
+  for(const it of P.items){
+    const d=document.createElement("div");
+    const nav = navigable(which, it);
+    d.className = "frow " + (nav ? "dir" : "file");
+    d.setAttribute("role","option"); d.dataset.path = it.path;
+    d.innerHTML = '<span class="fn">'+(nav ? (it.type==="link"?"↪ ":"▸ ") : "· ")+esc(it.name)+
+      '</span><span class="fs">'+(nav ? "" : hsize(it.size))+'</span>';
+    d.onclick = ()=>{
+      if(nav) loadPane(which, which==="android" ? it.path+"/" : it.path);
+      else { P.sel = it; renderSel(which); }
+    };
+    list.appendChild(d);
+  }
+  if(!P.items.length && !err){ const e=document.createElement("div"); e.className="empty"; e.textContent="(비어 있음)"; list.appendChild(e); }
+  renderSel(which);
+}
+function renderSel(which){
+  const P = fp[which];
+  $("flist-"+which).querySelectorAll(".frow").forEach(r=>{
+    const on = !!P.sel && r.dataset.path===P.sel.path;
+    r.classList.toggle("sel", on); r.setAttribute("aria-selected", on);
+  });
+  $("fsel-"+which).textContent = P.sel ? P.sel.name+" ("+hsize(P.sel.size)+")" : "파일 선택";
+  $(which==="android" ? "pull" : "push").disabled = !P.sel;
+}
+["android","local"].forEach(w=>{
+  $("fpath-"+w).addEventListener("keydown", e=>{
+    if(e.key==="Enter" && !e.isComposing){ e.preventDefault(); loadPane(w, $("fpath-"+w).value.trim()); }
+  });
+});
+
+// ---- copy jobs (background on the server; polled here) ----
+const jobs = [];
+function renderJobs(){
+  $("jobs").innerHTML = jobs.slice(-6).map(j=>
+    '<div class="job '+j.state+'">'+({running:"⋯",done:"✓",error:"✗"}[j.state]||"")+" "+
+    esc(j.label)+(j.note ? " — "+esc(j.note) : "")+'</div>').join("");
+}
+async function transfer(op){
+  const src = op==="pull" ? fp.android.sel : fp.local.sel;
+  if(!src) return;
+  const dst = op==="pull" ? fp.local.path : fp.android.path;
+  const job = {state:"running", label:(op==="pull" ? "↓ " : "↑ ")+src.name, note:""};
+  jobs.push(job); renderJobs();
+  let r, j;
+  try{
+    r = await fetch("/api/fs/"+op, {method:"POST", headers:{"Content-Type":"application/json"},
+                                    body:JSON.stringify({src:src.path, dst})});
+    j = await r.json();
+  }catch(e){ job.state="error"; job.note="연결 실패"; renderJobs(); return; }
+  if(!r.ok){ job.state="error"; job.note=j.error||("HTTP "+r.status); renderJobs(); return; }
+  for(let i=0;i<600;i++){                       // up to ~7 min for big files
+    await new Promise(res=>setTimeout(res, 700));
+    let s; try{ s = await (await fetch("/api/fs/job/"+j.id)).json(); }catch(e){ continue; }
+    if(s.state==="done"){ job.state="done"; job.note="→ "+s.dst; renderJobs();
+      loadPane(op==="pull" ? "local" : "android", dst); return; }
+    if(s.state==="error"){ job.state="error"; job.note=s.error; renderJobs(); return; }
+  }
+  job.state="error"; job.note="시간 초과"; renderJobs();
+}
+$("pull").onclick = ()=> transfer("pull");
+$("push").onclick = ()=> transfer("push");
+
+// ---- keyboard → device: a hidden textarea captures keys (IME-aware) ----
+const kbcap = $("kbcap");
+let kbuf = "", kbT = null;
+const KMAP = {Backspace:67, Enter:66, Tab:61, ArrowUp:19, ArrowDown:20, ArrowLeft:21,
+              ArrowRight:22, Delete:112, Home:122, End:123, PageUp:92, PageDown:93};
+function kbFlush(){
+  if(kbT){ clearTimeout(kbT); kbT=null; }
+  if(kbuf){ const t=kbuf; kbuf=""; scrPost("text", {text:t}); }
+}
+function kbQueue(t){                 // batch keystrokes: one ADBKeyBoard broadcast per ~150ms
+  if(!t) return;
+  kbuf += t;
+  if(kbT) clearTimeout(kbT);
+  kbT = setTimeout(kbFlush, 150);
+}
+kbcap.addEventListener("keydown", e=>{
+  e.stopPropagation();
+  if(e.isComposing || e.keyCode===229) return;           // Korean syllable still composing
+  if(e.key==="Escape"){ e.preventDefault(); kbcap.blur(); return; }
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+  const code = KMAP[e.key];
+  if(code!==undefined){ e.preventDefault(); kbFlush(); scrPost("key", {code}); }
+});
+kbcap.addEventListener("input", e=>{
+  if(e.isComposing) return;                              // wait for compositionend
+  const v = kbcap.value; kbcap.value = ""; kbQueue(v);
+});
+kbcap.addEventListener("compositionend", ()=>{
+  const v = kbcap.value; kbcap.value = ""; kbQueue(v);   // committed syllables only
+});
+kbcap.addEventListener("focus", ()=> $("conwrap").classList.add("kbon"));
+kbcap.addEventListener("blur", ()=>{ kbFlush(); $("conwrap").classList.remove("kbon"); });
+
+// initial mode: #console deep-link or last used; console needs the screen API
+fetch("/api/screen/info").then(r=>r.json()).then(j=>{
+  consoleOK = !!j.enabled;
+  if(!consoleOK){
+    $("m-console").disabled = true; $("mconsole").disabled = true;
+    $("m-console").title = "비활성 — 비로컬 바인드는 --allow-screen 필요";
+  }
+  const want = location.hash==="#console" ? "console" : lsGet("kakao.mode", "chat");
+  if(want==="console" && consoleOK) setMode("console", false);
+}).catch(()=>{});
 
 // keep the input line visible when the mobile keyboard opens (visualViewport)
 function fitViewport(){
