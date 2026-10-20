@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 keywords = ["kakaotalk", "adb", "android", "automation", "redroid", "waydroid", "cli"]
-dependencies = []  # pure stdlib + external `adb` binary
+dependencies = ["cryptography>=41"]  # DB AES-CBC; UI transport uses external adb
 
 [project.scripts]
 kakao = "kakao_cli.cli:main"

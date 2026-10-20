@@ -1,8 +1,7 @@
 # kakao-cli
 
-공식 Android 카카오톡을 **redroid(Docker) / Waydroid**에서 구동하고 **adb UI 자동화**로
-제어하는 Linux CLI. 서버 프로토콜(LOCO)을 재구현하지도, 로컬 DB를 복호화하지도 않는다 —
-공식 앱을 그대로 조작한다.
+공식 Android 카카오톡을 **redroid(Docker) / Waydroid**에서 구동하고 **읽기 전용 DB 수신 + adb UI 송신**으로
+제어하는 CLI. 서버 프로토콜(LOCO)은 재구현하지 않고 공식 앱의 동기화 데이터를 읽는다.
 
 - 텍스트·이미지·영상·문서 **송신**, 방별 **수신 폴링**, 미디어 **수집**
 - **태블릿(서브 기기)**으로 로그인해 기존 폰과 **공존**
@@ -25,11 +24,11 @@
 
 ```
 [제어 호스트]  --- adb (TCP 5555) --->  [Linux VM]
-  kakao-cli (Python, 순수 stdlib)         redroid (Android 14, libndk ARM 변환)
+  kakao-cli (Python + cryptography)         redroid (Android 14, libndk ARM 변환)
                                            └ com.kakao.talk  (태블릿 지문으로 로그인)
 ```
 
-- CLI는 `adb` 바이너리만 있으면 어디서든 동작(제3자 의존 없음). UI는 `uiautomator dump`로
+- CLI는 Python 3.11+, `cryptography>=41`, `adb`가 필요하다. DB 수신은 AES-CBC로 메모리에서만 복호화한다. UI는 `uiautomator dump`로
   읽고 resource-id/좌표로 조작한다. 한글 입력은 **ADBKeyBoard IME** 경유.
 - Android는 host 커널의 **binder**가 필요하다(전용 VM이 자체 커널로 제공).
 - 카카오톡 네이티브 라이브러리는 ARM 전용 → x86_64에선 redroid의 **libndk 변환** 필요.
@@ -132,7 +131,7 @@ ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
 # 종료: ssh agent@192.168.0.30 tmux kill-session -t kwebui  (SIGHUP에도 jar·forward·잠금 정리)
 ```
 
-콘솔 탭이 열려 가상 디스플레이를 쓰는 동안 CLI 송수신류는 `console_busy`(종료 코드 7)로 거절된다.
+콘솔 탭이 열려 가상 디스플레이를 쓰는 동안 UI 소스·송신류는 `console_busy`(종료 코드 7)로 거절된다.
 
 ```
 ┌ 안드로이드 /sdcard/… ⇪ ┬──────────────────────────────┐
@@ -183,8 +182,8 @@ ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
   MSE ~0.15–0.4s, 서버 CPU 2–3%, 기기는 SW 인코더(media.codec) ~17–27%.
 - **CLI/TUI와 동시 사용**: 가상 디스플레이에 앱이 있는 동안 `input tap`은 기본 디스플레이로 가므로 CLI
   자동화가 엉뚱한 화면을 누르게 된다. 그래서 콘솔이 **기기에 잠금 파일**(5초 하트비트, 기기 시계 기준
-  20초 지나면 무효)을 두고, 그동안 `rooms/read/send/poll/tui …`는 `console_busy`(종료 코드 7)로 거절한다.
-  콘솔 탭을 닫거나 **미러**로 바꾸면 풀린다(`kakao doctor`에 표시).
+  20초 지나면 무효)을 두고, 그동안 UI 수신·송신은 `console_busy`(종료 코드 7)로 거절한다.
+  콘솔 탭을 닫거나 **미러**로 바꾸면 풀린다(`kakao doctor`에 표시). **DB 수신과 TUI 수신은 잠금 중에도 허용**한다.
 - **모바일**: 좁은 화면(≤720px)에서는 기기 화면이 뷰포트 높이를 거의 채우고(세로 가상 디스플레이) 파일
   패널은 그 아래(스크롤). `100dvh`·safe-area·`visualViewport`, 입력 16px(iOS 확대 방지).
 - **보안(중요)**: 콘솔은 **계정 전체 원격 조작**과 같다. 기본 바인드 `127.0.0.1`. `--host`가 로컬이 아니면
@@ -195,9 +194,12 @@ ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
 
 ## 수신 모델
 
-- **`poll <room>`(권장)**: 한 방을 열어 보이는 메시지(텍스트 + `[Photo]`/`[Video]`)를 폴링,
-  신규만 emit. 알림/백그라운드 의존이 없어 견고하고 음소거 방도 잡는다. 외부(폰) 발신이므로
-  adb 경합이 없다. 단점: 한 번에 한 방, 폴링 간격 내 연속 메시지는 합쳐질 수 있다.
+- **`poll <room>`(권장)**: 기본 `--source db`, 방의 `MAX(_id)` 이후 행을 읽는다.
+  화면을 전환하거나 읽음 처리하지 않고 동일 본문·연속 수신을 행 ID로 구별한다.
+  `rooms/read`도 DB 기본이며 `--source ui`로 기존 화면 경로를 선택한다.
+  DB 버전/스키마/복호화 실패는 경고 후 UI로 폴백하며, 콘솔 잠금 중 UI 폴백은 거절한다.
+  `read`의 기존 `messages`는 유지하고 상세 필드를 `message_details`로 추가한다.
+  [암호 형식·읽음수·방 선택·종류 표](docs/db-receive.md)를 참고한다.
 - **`watch`(보조)**: OS 알림(`dumpsys notification`)을 읽는다. **앱이 백그라운드**여야
   알림이 뜬다(포그라운드면 즉시 읽음 처리). 방 무관하게 잡지만 음소거/포커스 방은 놓친다.
 
@@ -206,7 +208,7 @@ ssh agent@192.168.0.30 'tmux new-session -d -s kwebui \
 - UI 자동화라 **앱 업데이트로 레이아웃/resource-id가 바뀌면 깨질 수 있다**(셀렉터는 라이브
   `uiautomator dump`가 기준).
 - 한 기기에 **두 제어 세션을 동시에** 돌리면 UI 경합이 난다(poll 중 send 등). 순차 사용 권장. 웹 콘솔이
-  가상 디스플레이로 앱을 쓰는 동안 CLI/TUI는 `console_busy`로 거절된다(위 웹 콘솔 참고).
+  가상 디스플레이로 앱을 쓰는 동안 UI 경로와 송신은 `console_busy`로 거절된다(위 웹 콘솔 참고).
 - Play Integrity/anti-emulator로 로그인·동작이 막힐 가능성(현재 빌드에선 동작 확인).
 - 과도한 자동화는 계정 제한으로 이어질 수 있다.
 

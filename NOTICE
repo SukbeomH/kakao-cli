@@ -1,0 +1,8 @@
+타사 참고·라이선스 고지
+
+DB 암호 형식: jiru/kakaodecrypt (WTFPL)
+https://github.com/jiru/kakaodecrypt
+https://github.com/jiru/kakaodecrypt/blob/master/COPYING
+kakaodb.py는 공개 salt/PKCS#12 SHA-1/AES-CBC 형식을 참고해 자체 구현했다.
+Iris(GPL-3.0)의 코드는 가져오지 않았다. 파일 형식에 정의된 공개 상수는
+사용자 비밀번호, API 키 또는 계정 자격증명이 아니다.

@@ -307,3 +307,26 @@ B0에서 확정한 필드만 `driver._messages_detailed`에 추가(하위호환:
 - **스크린샷 개인정보**: 콘솔2 이전 스크린샷(`console_desktop`, `screen_{desktop,mobile}`, `webui_{desktop,mobile_list}`)을 Pillow 가우시안 블러(r=9)로 대화방 목록·기기 화면 본문을 가려 **원본 덮어씀**(백업 없음). `webui_mobile_convo`는 자기채팅 e2e 문자열만 있어 유지.
 - **e2e 실행 환경 메모**: 컨트롤 호스트의 기본 `node`는 구버전이라 playwright-core 로드 실패 → `~/.nvm/versions/node/v22.23.2/bin/node` + `NODE_PATH=~/kakao-tools/node_modules` + `CHROME=~/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome` 사용.
 - **남은 점**: `26157f2`(e2e cleanup ssh 터널 종료) 이후 전체 e2e 미재실행, `e2e_tui.sh`(실전송) 미실행, Range 이어받기·폴더 전송 후속, 모바일에서 파일 패널은 스크롤 필요.
+
+### DB 직접 읽기 수신 D (2026-10-20)
+
+- 사용자 지시 `/home/agent/kakao-tasks/TASK_db_compose.md`와 RESEARCH 3종을 기준으로 구현.
+  브랜치 `codex-db`, 시작 작업트리는 깨끗했으며 단계별 커밋, 푸시하지 않는다.
+- 기본 결정: `rooms/read/poll`은 db 우선, 실패 시 경고+UI 폴백.
+  콘솔 잠금 중 db 허용, ui/폴백/송신 거절. TUI도 db 수신+UI 송신.
+- 외부 의존은 작업서에서 허용한 `cryptography>=41`만 추가(pyproject/uv.lock).
+  VM 기존 41.0.7에서 실기 성공, 개발은 Python 3.11 .venv/cryptography 50.0.2.
+  순수 Python AES/GPL Iris 코드는 사용하지 않았다. WTFPL jiru 출처는 NOTICE에 기록.
+- JSON 하위호환: read.messages 문자열 배열 유지, message_details 추가.
+  DB 본문 실패는 한 건이라도 전체 호출을 폴백(임계율 기본값=0%).
+- 이름 기본값: 확인 가능한 메타/프로필 이름, 없으면 `room:<id>`/`user:<id>`.
+  friends 부재와 신규 SQLCipher 제외로 UI 이름 경로 폴백도 제공한다.
+  이름 추정 조인이나 영구 개인정보 매핑은 하지 않는다.
+- 읽음수 정의/종류 표/버전 가드는 [DB 문서](../db-receive.md).
+  미확정 파일·시스템 타입은 unknown(n), 업데이트는 UI 폴백.
+- 검증: 94개 단위/회귀 통과, 실기 본문 1,105/1,105 복호화,
+  자기채팅 UI 9개 DB 순서·본문 일치, 최근20 isMine 일치,
+  MAX(_id) 증분 경계 통과, 실제 잠금 중 DB 읽기 성공/UI 거절.
+  [개수·불리언만 기록한 실행 증거](../verification/2026-10-20-db-compose.md).
+- 안전: 송신0, DB 반출0, 복호화 본문/이름 저장0, 라이브 redroid 재시작/재생성0.
+  VM 소스 배포만 수행, 기존 tmux kwebui 유지.

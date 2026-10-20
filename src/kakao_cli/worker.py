@@ -27,6 +27,7 @@ class Worker(threading.Thread):
         super().__init__(daemon=True)
         from .driver import Driver
         self.d = Driver(dev)
+        self.receiver = None
         self.cmds: queue.Queue = queue.Queue()
         self.events: queue.Queue = queue.Queue()
         self.room: str | None = None
@@ -85,13 +86,33 @@ class Worker(threading.Thread):
         elif op == "open":
             self.room = cmd[1]
             self._emit("status", f"opening {self.room} …")
-            self.d._open_target(self.room)
+            if self.receiver is None:
+                from .receiver import Receiver
+                self.receiver = Receiver(self.d.dev, warning=lambda text: self._emit("status", text))
+            # DB 선택은 화면을 열지 않는다.
+            if not self.receiver.db:
+                from . import consolelock
+                consolelock.check(self.d.dev)
+                self.d._open_target(self.room)
             self._emit("opened", self.room)
             self._emit("status", f"in {self.room}")
             self._poll_messages()
         elif op == "send":
             if self.room and cmd[1].strip():
                 self._emit("status", "sending …")
+                from . import consolelock
+                consolelock.check(self.d.dev)
+                target = self.room
+                if target.startswith("room:") and self.receiver and self.receiver.db:
+                    selected = self.receiver.db.resolve(target)
+                    target = self.receiver.db.room_name(selected)
+                    if target.startswith("room:"):
+                        from .errors import KakaoError
+                        raise KakaoError("방 이름을 확인할 수 없습니다. 웹 콘솔에서 직접 선택하세요")
+                    if self.receiver.db.resolve(target)['id'] != selected['id']:
+                        from .errors import KakaoError
+                        raise KakaoError("방 이름과 ID가 일치하지 않습니다. 웹 콘솔에서 직접 선택하세요")
+                self.d._open_target(target)
                 res = self.d.send_in_room(cmd[1])
                 self._emit("status", f"sent ({res})")
                 self._poll_messages()
@@ -147,9 +168,12 @@ class Worker(threading.Thread):
 
     def _refresh_rooms(self):
         self._emit("status", "loading rooms …")
-        rooms = self.d.list_rooms()
+        if self.receiver is None:
+            from .receiver import Receiver
+            self.receiver = Receiver(self.d.dev, warning=lambda text: self._emit("status", text))
+        rooms = self.receiver.list_rooms()
         self._emit("rooms", rooms)
         self._emit("status", f"{len(rooms)} rooms")
 
     def _poll_messages(self):
-        self._emit("messages", (self.room, self.d._messages_detailed(self.d.screen())))
+        self._emit("messages", (self.room, self.receiver.read_detailed(self.room)))

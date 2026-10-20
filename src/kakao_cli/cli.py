@@ -35,16 +35,23 @@ def cmd_doctor(args) -> dict:
             "web_console_virtual_display": info if busy else None}
 
 
+def _receiver(args):
+    from .receiver import Receiver
+    return Receiver(_dev(args), getattr(args, "source", "db"))
+
+
 def cmd_rooms(args) -> dict:
-    d = Driver(_ui_dev(args))
-    rooms = d.list_rooms()
-    return {"ok": True, "count": len(rooms), "rooms": rooms}
+    receiver = _receiver(args)
+    rooms = receiver.list_rooms()
+    return {"ok": True, "count": len(rooms), "rooms": rooms, "source": receiver.source}
 
 
 def cmd_read(args) -> dict:
-    d = Driver(_ui_dev(args))
-    msgs = d.read_room(args.room, limit=args.limit)
-    return {"ok": True, "room": args.room, "count": len(msgs), "messages": msgs}
+    receiver = _receiver(args)
+    detailed = receiver.read_detailed(args.room, limit=args.limit)
+    return {"ok": True, "room": args.room, "count": len(detailed),
+            "messages": [m["text"] for m in detailed],
+            "message_details": detailed, "source": receiver.source}
 
 
 def cmd_send(args) -> dict:
@@ -125,7 +132,7 @@ def cmd_track(args) -> int:
 
 def cmd_poll(args) -> int:
     import json, sys
-    d = Driver(_ui_dev(args))
+    d = _receiver(args)
     for ev in d.poll_room(args.room, interval=args.interval, limit=args.limit):
         json.dump(ev, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n"); sys.stdout.flush()
@@ -135,8 +142,7 @@ def cmd_poll(args) -> int:
 
 def cmd_tui(args) -> int:
     from . import tui
-    _ui_dev(args)                       # refuse while the web console holds the app
-    tui.run(serial=args.serial, addr=args.addr, adb=args.adb)
+    tui.run(serial=args.serial, addr=args.addr, adb=args.adb, receiver=_receiver(args))
     return 0
 
 
@@ -164,7 +170,7 @@ examples:
   kakao tui                                  # interactive terminal UI
   kakao webui --port 8800                    # device console in a browser (localhost)
 
-Receive model: `poll <room>` opens one room and streams newly-arrived messages
+Receive model: `poll <room>` defaults to read-only DB incremental reception. UI fallback streams messages
 (text + [Photo]/[Video]); robust, no notification/background dependency. `watch`
 is an alternative that reads OS notifications (requires the app backgrounded).
 """
@@ -229,6 +235,9 @@ def build_parser():
     ]:
         sp = sub.add_parser(name, help=_DESC[name], description=_DESC[name])
         _common(sp)
+        if name in ("rooms", "read", "poll"):
+            sp.add_argument("--source", choices=("db", "ui"), default="db",
+                            help="수신 경로 (기본 db, 실패하면 경고 후 ui)")
         if extra == "read":
             sp.add_argument("room", nargs="?", default=None, help="room name or 'me' (default: current room)")
             sp.add_argument("--limit", type=int, default=20, metavar="N", help="max messages (default: 20)")

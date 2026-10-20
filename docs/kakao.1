@@ -9,11 +9,11 @@ kakao \- drive the official KakaoTalk Android app over adb
 .SH DESCRIPTION
 .B kakao-cli
 controls the official KakaoTalk Android app running in redroid (or Waydroid)
-through adb UI automation. It does not reimplement the LOCO protocol or decrypt
-the local database; it operates the real app. The app is logged in as a tablet
+through adb UI automation. It reads the device database read-only in memory and sends through the real app UI;
+it does not reimplement the LOCO protocol. The app is logged in as a tablet
 (sub\-device) so it coexists with the user's phone.
 .PP
-The control client needs only the
+The control client needs Python 3.11+, cryptography>=41 and the
 .B adb
 binary; it reads the screen with
 .I uiautomator dump
@@ -163,8 +163,8 @@ taps would land on the wrong display.
 Poll the whole chat list and emit each room's newest message when it changes.
 .SH RECEIVE MODEL
 .B poll
-is the recommended receive path: it opens one room and streams new messages with
-no notification or background dependency, and catches muted rooms.
+is the recommended receive path: it reads new database rows without screen control.
+UI fallback opens a room and may mark messages read.
 .B watch
 reads OS notifications instead, which requires the app to be backgrounded and
 misses muted or focused rooms.
@@ -201,3 +201,14 @@ UI automation breaks when the app layout changes. Running two control sessions
 against one device causes UI contention. Unofficial automation may violate
 KakaoTalk's terms and risk account restriction \[em] use your own account,
 sparingly, at human\-like speed.
+
+.SH DB 수신
+rooms/read/poll은 기본 --source db, --source ui로 화면 경로를 선택한다.
+DB는 기기 내부 sqlite3 -readonly -json으로만 읽고 파일을 반출하지 않는다.
+read의 messages 문자열 배열은 유지하고 message_details에 시각(Unix 초), 발신자,
+is_mine, 종류, 안읽은 인원, _id를 추가한다. poll은 MAX(_id) 이후 행만 스트림한다.
+본문과 이름은 메모리와 요청 출력에만 사용한다. 출력을 파일/로그로 저장하지 않는다.
+앱 버전/스키마 변경 또는 복호화 실패 시 경고 후 UI 폴백한다.
+콘솔 잠금 중 DB 수신/TUI 수신은 허용하지만 UI 폴백과 송신은 console_busy(7)다.
+이름을 얻지 못한 방은 rooms의 target(room:<id>)을 사용한다.
+자세한 읽음수 정의와 종류 표는 docs/db-receive.md를 참고한다.

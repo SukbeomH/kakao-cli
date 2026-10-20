@@ -392,6 +392,8 @@ class Driver:
         as they arrive. Reliable (single room, foreground), no notification/background
         dependency. The room stays focused (incoming messages are marked read)."""
         import time as _t
+        from . import consolelock
+        consolelock.check(self.dev)
         self._open_target(name)
         if not self._screen_where(lambda s: s.first(rid=RID["chat_log"]) is not None, timeout=10):
             raise KakaoError("chat log not found", room=name)
@@ -399,6 +401,7 @@ class Driver:
         primed = False
         while True:
             try:
+                consolelock.check(self.dev)
                 cur = self._messages_on_screen(self.screen())[-limit:]
                 if cur:
                     if not primed:
@@ -414,8 +417,10 @@ class Driver:
                             yield {"room": name, "text": m}
                         if new:
                             prev_bottom = cur[-1]
-            except Exception as e:
-                yield {"_error": str(e)}
+            except KakaoError:
+                raise
+            except Exception:
+                yield {"_error": "UI 수신 실패"}
             _t.sleep(interval)
 
 

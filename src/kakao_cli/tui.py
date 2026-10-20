@@ -151,7 +151,7 @@ class TUI:
                     elif ch in ("\n", "\r") and self.rooms:
                         self.cur_room = None
                         self.messages = []
-                        self.w.put("open", self.rooms[self.sel]["name"])
+                        self.w.put("open", self.rooms[self.sel].get("target", self.rooms[self.sel]["name"]))
                 else:  # input focus
                     if ch == "\t":
                         self.focus = "list"
@@ -177,9 +177,10 @@ class TUI:
         self.w.put("quit")
 
 
-def run(serial=None, addr=None, adb="adb"):
+def run(serial=None, addr=None, adb="adb", receiver=None):
     locale.setlocale(locale.LC_ALL, "")
-    dev = connect(serial, addr, adb=adb)
+    dev = receiver.dev if receiver else connect(serial, addr, adb=adb)
     worker = Worker(dev)
+    worker.receiver = receiver
     tui = TUI(worker)
     curses.wrapper(tui.loop)

@@ -41,9 +41,12 @@ class Device:
         return None
 
     def dump(self) -> str:
-        """Raw uiautomator XML of the current screen."""
-        self.shell("uiautomator dump /sdcard/kc.xml")
-        return self.shell("cat /sdcard/kc.xml")
+        """UI XML을 메모리로만 수신한다. 본문/이름이 있는 dump 파일을 만들지 않는다."""
+        out = self._run(["exec-out", "uiautomator dump /dev/tty"])
+        start, end = out.find("<?xml"), out.rfind("</hierarchy>")
+        if start < 0 or end < 0:
+            raise AdbUnavailable("메모리 UI dump를 얻지 못했습니다")
+        return out[start:end + len("</hierarchy>")]
 
     def tap(self, x: int, y: int) -> None:
         self.shell(f"input tap {x} {y}")

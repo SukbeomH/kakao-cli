@@ -64,7 +64,7 @@ adb devices               # ★ device 상태 확인
 ```bash
 adb shell dumpsys package com.kakao.talk | grep versionName   # 설치 확인
 adb shell monkey -p com.kakao.talk -c android.intent.category.LAUNCHER 1  # 기동
-adb shell uiautomator dump /sdcard/u.xml && adb pull /sdcard/u.xml  # UI 트리 덤프
+kakao read me --source ui  # UI 트리는 /dev/tty 표준출력으로 메모리에서만 처리한다
 # kakao-cli
 uv run kakao doctor
 ```
