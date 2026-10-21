@@ -6,13 +6,13 @@ Lima VM 디스크, Android `/data`, ADB 키, 로그인 상태와 개인 캐시�
 
 ## 사용자 설치
 
-Releases의 **`kakao-cli-0.1.0-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
+Releases의 **`kakao-cli-0.1.1-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
 GitHub가 자동 생성하는 Source code 압축파일 대신 첨부된 설치 패키지를 사용한다.
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
-tar -xzf kakao-cli-0.1.0-macos-arm64.tar.gz
-cd kakao-cli-0.1.0-macos-arm64
+tar -xzf kakao-cli-0.1.1-macos-arm64.tar.gz
+cd kakao-cli-0.1.1-macos-arm64
 brew install lima
 bash scripts/setup-macos.sh
 ```
@@ -35,6 +35,10 @@ bash scripts/setup-macos.sh
 실제 확인한 범위는 수동 설치 후 Android 정상 부팅·doctor·웹 콘솔·로그인 화면과 정상 종료다.
 계정 로그인·메시지 송수신·재부팅 후 로그인 유지는 미검증이므로 preview로 배포한다.
 상세 단계와 문제 해결은 [Mac 가이드](deploy-compose.md#apple-silicon-mac)를 참고한다.
+
+v0.1.1에는 LAN HTTP에서 자동 선택되는 MSE 영상이 약 1분 후 멈추던 문제의 수정이 포함된다.
+기존 원격 서버는 [수정·적용 기록](verification/2026-10-21-mse-buffer.md)의 webui 갱신 절차를
+따르고, 갱신 후 브라우저도 새로고침한다.
 
 ## 내려받는 배포물
 

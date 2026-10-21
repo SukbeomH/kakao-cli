@@ -30,7 +30,7 @@ def check(path, expected):
 def download(url, target, expected):
     if not url.startswith("https://"):
         raise ValueError("Only HTTPS artifact URLs are accepted")
-    request = urllib.request.Request(url, headers={"User-Agent": "kakao-cli-bootstrap/0.1.0"})
+    request = urllib.request.Request(url, headers={"User-Agent": "kakao-cli-bootstrap/0.1.1"})
     print(f"Downloading {target.name}", flush=True)
     with urllib.request.urlopen(request, timeout=60) as response, target.open("xb") as out:
         if not response.geturl().startswith("https://"):
