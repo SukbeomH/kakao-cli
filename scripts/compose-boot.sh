@@ -34,7 +34,8 @@ fi
 for permission in POST_NOTIFICATIONS READ_MEDIA_IMAGES READ_MEDIA_VIDEO READ_MEDIA_VISUAL_USER_SELECTED READ_CONTACTS; do
   adb -s "$SER" shell pm grant com.kakao.talk "android.permission.$permission" >/dev/null 2>&1 || true
 done
-if ! adb -s "$SER" shell ime list -s | tr -d '\r' | grep -qx 'com.android.adbkeyboard/.AdbIME'; then
+# 새로 설치한 입력기는 아직 비활성 상태이므로 전체 목록(-a)에서 확인한다.
+if ! adb -s "$SER" shell ime list -a -s | tr -d '\r' | grep -qx 'com.android.adbkeyboard/.AdbIME'; then
   echo 'ADBKeyBoard APK를 먼저 설치하세요' >&2
   exit 1
 fi

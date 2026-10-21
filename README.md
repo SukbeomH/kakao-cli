@@ -85,7 +85,7 @@ ssh agent@192.168.0.30 'cd ~/kakao-compose && export COMPOSE_DISABLE_ENV_FILE=1 
 ```
 
 Apple Silicon Mac은 [deploy/lima.yaml](deploy/lima.yaml) + [ARM 오버레이](deploy/compose.lima.yaml)
-(정적 검증만, 실기동 보류 — 태블릿 로그인은 기기 1대라 맥 로그인 시 VM 세션이 끊긴다).
+(2026-10-21 독립 기동·로그인 화면 확인, 계정 로그인 전 — 태블릿 기기 1대 제한).
 전환·롤백·맥 절차는 [docs/deploy-compose.md](docs/deploy-compose.md).
 
 ## 설치 / 실행
@@ -122,7 +122,7 @@ docker run --rm kakao-cli doctor --connect 10.0.0.30:5555
 | ④ VM의 webui 컨테이너 | — | `--serial redroid:5555` | 실측 |
 | ⑤ 외부망(휴대폰 등) | ② 또는 VPN | ② | 미구성 |
 | ⑥ 새 Linux 호스트 | compose 신규 설치 | 동일 | 정적 검증 |
-| ⑦ Apple Silicon Mac | Lima VM + compose | 동일 | 정적 검증(실기동 보류) |
+| ⑦ Apple Silicon Mac | Lima VM + compose | 동일 | 기동·로그인 화면 확인(계정 로그인 전) |
 | ⑧ Windows | ② (브라우저) | ②(Python+adb 또는 Docker) | 미검증 |
 
 ### ① LAN 브라우저 (가장 간단)
@@ -173,7 +173,22 @@ binder 커널 모듈이 있는 x86_64 Linux + Docker. [docs/deploy-compose.md](d
 
 Docker Desktop·OrbStack은 binder가 없어 안 된다. [deploy/lima.yaml](deploy/lima.yaml)로 arm64 Linux VM을
 만들고 [ARM 오버레이](deploy/compose.lima.yaml)(redroid 14 64only)로 띄운다(`scripts/lima-compose.sh`).
-파일·정적 검증만 마쳤고 실기동·로그인은 보류 상태다(⑥과 같은 1대 제한).
+CPU 2개·메모리 4GiB·디스크 20GiB 구성으로 기동·웹 콘솔·로그인 화면을 확인했다.
+계정 로그인·송수신 검증은 남아 있다(⑥과 같은 1대 제한).
+
+```bash
+# 저장소 또는 Releases의 macos-arm64 설치 패키지를 푼 폴더에서
+brew install lima
+bash scripts/setup-macos.sh
+# 접속: http://127.0.0.1:8800 → 직접 QR 로그인
+# 종료: limactl stop kakao
+```
+
+설치기는 Ubuntu·Android 이미지를 고정 digest로 내려받고, 카카오톡 26.8.3과 ADBKeyBoard는
+설치 시 해시·서명을 검증해 설치한다. 이미 설치된 앱은 재설치하지 않는다.
+**인터넷 연결이 필요하며 APK·VM 디스크·ADB 키는 릴리즈에 포함하지 않는다.**
+새 설치기 전체 흐름은 모의 테스트로 확인했고, 실제 화면 확인은 아래 문서의 수동 절차로 진행했다.
+[상세 설치·문제 해결](docs/deploy-compose.md#apple-silicon-mac) · [릴리즈 구성](docs/release.md).
 
 ### ⑧ Windows
 
@@ -224,7 +239,7 @@ kakao tui --connect 10.0.0.30:5555
 
 ```bash
 kakao webui --connect 10.0.0.30:5555           # http://127.0.0.1:8800
-ssh -L 8800:127.0.0.1:8800 <vm>  # 원격 호스트에서 기본(127.0.0.1)으로 띄웠다면 SSH 터널 → localhost:8800
+ssh -L 8800:127.0.0.1:8800 user@vm  # user@vm을 실제 SSH 계정·주소로 변경 → localhost:8800
 # 운영 VM(LAN 바인드)은 아래 "사용 환경별 가이드 ②" 참고
 ```
 

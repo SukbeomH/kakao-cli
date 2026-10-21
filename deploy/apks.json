@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "kakaotalk": {
+    "version": "26.8.3",
+    "version_code": 29260830,
+    "url": "https://d.apkpure.net/b/XAPK/com.kakao.talk?versionCode=29260830",
+    "sha256": "f9703d584ff726c1365b6ca2683ed5b88dbb085fc994cd5af5292ed59189b189",
+    "certificate_sha256": "2b06cc3d47782d7c497c07f17cb5f859cd6bbcb66829f3e67b96b7a44820d2ce",
+    "apks": {
+      "com.kakao.talk.apk": "c6013aef31e7510a48f56783430428c3d61cada7ac8d4c23ecb9346a9c491519",
+      "config.arm64_v8a.apk": "6d5116ff7a972c2934a7266f9df1eb98e79a02cbed00f09609792d4a7f90b537",
+      "config.en.apk": "b21e1cbc29be00a3f725679512832132d5a2733019bd7ca2b2774a5f19e2b35f",
+      "config.mdpi.apk": "eb7092b94b93856dd88512bf3a186aaa7f8e20f84a6144a1a5fc486323af2895"
+    }
+  },
+  "adbkeyboard": {
+    "url": "https://raw.githubusercontent.com/senzhk/ADBKeyBoard/d7b27288bc8c1c8348a79ea6896bd7352c30a9fc/ADBKeyboard.apk",
+    "sha256": "e698adea5633135a067b038f9a0cf41baa4de09888713a81593fb2b9682cdc59",
+    "certificate_sha256": "16959b9f7274e0c18a1d67ba2d1e284465f21cd8f0eddfeea320810e08a12456",
+    "source": "https://github.com/senzhk/ADBKeyBoard/tree/d7b27288bc8c1c8348a79ea6896bd7352c30a9fc",
+    "license": "GPL-2.0"
+  }
+}

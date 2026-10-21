@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+dist/
 
 # 프로필 엔진/helper는 외부 캐시에만 둔다.
 *.aar

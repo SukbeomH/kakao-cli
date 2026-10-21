@@ -74,7 +74,7 @@ printf '%s\\n' "$*" >> "$KAKAO_TEST_CALLS"
 case "$*" in
   *'getprop sys.boot_completed'*) echo 1 ;;
   *'pm path com.kakao.talk'*) echo 'package:fake.apk' ;;
-  *'ime list -s'*) echo 'com.android.adbkeyboard/.AdbIME' ;;
+  *'ime list -a -s'*) echo 'com.android.adbkeyboard/.AdbIME' ;;
   *'dumpsys activity activities'*) echo 'topResumedActivity com.kakao.talk/FakeActivity' ;;
 esac
 ''')

@@ -1,7 +1,7 @@
 # Linux compose / Apple Silicon Lima
 
-현재 단계는 **파일 작성과 정적 검증만** 완료했다. 라이브 VM에서는 compose up,
-redroid 재생성/재시작, 포트 변경, 두 번째 redroid 실행을 하지 않았다.
+초기 검증은 **파일 작성과 정적 검증만** 진행했다. 이후 Linux 운영 전환은 아래 기록을,
+2026-10-21 Apple Silicon 독립 기동은 "Mac 독립 기동 확인"을 참고한다.
 아래 기동·전환 명령은 사용자가 전환을 승인한 뒤 신규/정지한 호스트에서 실행하는 절차다.
 **`docker compose down -v` 금지**: 키·콘솔 파일·캐시 볼륨을 지운다. 다른 구성에서
 Android 데이터를 명명 볼륨으로 바꿨다면 로그인과 DB까지 삭제된다. 정지는 `stop`을 쓴다.
@@ -71,34 +71,204 @@ COMPOSE_DISABLE_ENV_FILE=1 KAKAO_WEB_BIND=192.168.0.30 \
 
 ## Apple Silicon Mac
 
-Lima 2.0+를 준비한다. Docker Desktop 컨텍스트는 바꾸지 않는다.
-`lima.yaml`은 VZ, Ubuntu 24.04 arm64, 6 CPU/8GiB/40GiB, **mounts=[]**다.
-Mac 홈·프로젝트·SSH agent를 게스트에 공유하지 않으며, 웹 8800 하나만 Mac loopback으로
-포워딩하고 나머지 포트는 무시한다. ADB 5555는 Mac으로 포워딩하지 않는다.
+릴리즈 설치 패키지 또는 저장소 루트에서 다음 설치기를 사용할 수 있다.
+아래 수동 절차를 자동화하며, 기존 VM과 이미 설치된 앱을 유지한다.
 
 ```bash
-# 실제 VM 생성은 별도 승인 뒤에만 실행한다.
-limactl validate deploy/lima.yaml
-limactl start --name=kakao deploy/lima.yaml
-scripts/lima-compose.sh config --quiet
-scripts/lima-compose.sh up -d redroid
-# 게스트에서 adb로 공식 APK/ADBKeyBoard 설치; .env/키/기존 DB는 복사하지 않는다.
-# 필요하면 limactl copy로 사용자가 지정한 APK만 전달한다.
-scripts/lima-compose.sh up -d --build
-# 브라우저 http://127.0.0.1:8800
-scripts/lima-compose.sh stop
+brew install lima
+bash scripts/setup-macos.sh
 ```
 
-래퍼 기본 명령은 `config --quiet`다. VM 자동 생성이나 자동 up을 하지 않는다.
-Git 추적 코드만 tar 스트림으로 `/opt/kakao-cli`에 전달한다(커밋 후 실행).
-DB·.env·키 확장자는 추적돼 있어도 제외한다. `--workdir`는 게스트 절대 경로이며,
-Mac의 Docker CLI/컨텍스트를 쓰지 않고 `limactl shell … sudo docker compose`로 실행한다.
-`KAKAO_LIMA_INSTANCE`로 다른 Lima 인스턴스를 선택할 수 있다.
+설치기는 게스트 Python으로 APK를 내려받고, 필요하면 게스트에 apksigner·Java를 설치해
+해시와 서명을 확인한다. Mac에는 Lima만 필요하다. 신규 설치기 전체 흐름은 모의 테스트로,
+실제 독립 기동·화면은 아래 수동 절차로 확인했다. 기존 `kakao` VM의 커널·binder 준비가
+정상이라는 전제이며 템플릿을 이미 생성된 VM에 덮어쓰지 않는다.
+
+맥 자체에서 독립 실행하려면 Lima 안에 Android용 Linux VM을 만든다.
+Docker Desktop·OrbStack 컨테이너에 그대로 띄우는 방식은 아니다.
+**Mac에 Python·uv·adb·Docker CLI를 따로 설치하지 않아도** 아래 컨테이너 경로를 사용할 수 있다.
+APK 서명 검사에 쓸 Android SDK Build Tools의 `apksigner`는 별도로 준비한다(Java 필요).
+
+확인한 구성은 Lima 2.2.1 / VZ / Ubuntu 24.04 arm64 / **CPU 2개·메모리 4GiB·디스크 20GiB**다.
+게스트에서는 CPU 2개·메모리 약 3.8GiB·루트 파일시스템 약 19GiB로 보였다.
+설치 후 루트 사용량은 약 5.8GiB였다. 장시간 운용·송수신 성능의 최소 사양을 검증한 것은 아니다.
+
+`deploy/lima.yaml`은 **mounts=[]**로 Mac 홈·프로젝트·SSH agent를 공유하지 않는다.
+웹 8800을 Mac loopback으로 전달하며 ADB 5555는 Mac으로 전달하지 않는다.
+Docker는 게스트 안에서 실행하므로 Mac의 Docker 컨텍스트를 바꾸지 않는다.
+
+### 1. VM 생성과 Android 부팅
+
+아래 명령은 저장소 루트에서 실행한다. `kakao`라는 기존 인스턴스가 있으면 먼저
+`limactl list`로 확인하고, 처음 만드는 경우에만 템플릿 경로를 지정한다.
+
+```bash
+brew install lima
+limactl validate deploy/lima.yaml
+limactl start --name=kakao --tty=false deploy/lima.yaml
+scripts/lima-compose.sh config --quiet
+scripts/lima-compose.sh up -d redroid
+
+# Android 부팅 확인. sys.boot_completed가 1이 될 때까지 기다린다.
+limactl shell --workdir / kakao adb connect 127.0.0.1:5555
+limactl shell --workdir / kakao adb -s 127.0.0.1:5555 shell getprop sys.boot_completed
+scripts/lima-compose.sh ps -a
+```
+
+첫 생성은 Ubuntu 이미지 다운로드와 Docker·binder 모듈 설치가 있어 시간이 걸린다.
+`limactl start`의 READY와 redroid의 healthy를 확인한다. 부팅 도중 ADB가 잠시 offline인 것은
+가능하지만, 계속 offline이면 아래 문제 해결 절차로 로그를 확인한다.
+
+### 2. 카카오톡·ADBKeyBoard APK 준비
+
+Play에서 받은 본인 APK를 사용할 수 있다. 이번 확인에서는
+[APKPure의 카카오톡 26.8.3 ARM64 XAPK](https://apkpure.net/kakaotalk-messenger/com.kakao.talk/download/26.8.3)와
+[ADBKeyBoard 원저장소 APK](https://github.com/senzhk/ADBKeyBoard/blob/master/ADBKeyboard.apk)를 사용했다.
+APKPure는 카카오 공식 배포 사이트가 아니다. 아래는 **확인한 파일을 고정해서 재현하는 예**이며,
+다른 버전·다른 split 구성이면 파일명과 해시를 다시 확인한다.
+
+```bash
+TASK_APK_DIR="$(mktemp -d /tmp/kakao-apks.XXXXXX)"
+curl -fL --retry 2 'https://d.apkpure.net/b/XAPK/com.kakao.talk?versionCode=29260830' \
+  -o "$TASK_APK_DIR/kakaotalk-26.8.3.xapk"
+curl -fL --retry 2 https://raw.githubusercontent.com/senzhk/ADBKeyBoard/d7b27288bc8c1c8348a79ea6896bd7352c30a9fc/ADBKeyboard.apk \
+  -o "$TASK_APK_DIR/ADBKeyboard.apk"
+
+# 2026-10-21에 확인한 파일과 같은지 검사. 실패하면 설치하지 않고 배포물 변경을 확인한다.
+TASK_XAPK_SHA=f9703d584ff726c1365b6ca2683ed5b88dbb085fc994cd5af5292ed59189b189
+TASK_IME_SHA=e698adea5633135a067b038f9a0cf41baa4de09888713a81593fb2b9682cdc59
+printf '%s  %s\n' "$TASK_XAPK_SHA" "$TASK_APK_DIR/kakaotalk-26.8.3.xapk" \
+  "$TASK_IME_SHA" "$TASK_APK_DIR/ADBKeyboard.apk" | shasum -a 256 -c -
+
+unzip "$TASK_APK_DIR/kakaotalk-26.8.3.xapk" \
+  com.kakao.talk.apk config.arm64_v8a.apk config.en.apk config.mdpi.apk \
+  -d "$TASK_APK_DIR"
+
+# apksigner가 PATH에 없으면 Android SDK Build Tools의 절대 경로를 지정한다.
+(
+  set -e
+  for apk in com.kakao.talk.apk config.arm64_v8a.apk config.en.apk config.mdpi.apk; do
+    apksigner verify --print-certs "$TASK_APK_DIR/$apk"
+  done
+)
+```
+
+네 카카오톡 APK 모두 서명 검증 성공과 인증서 SHA-256
+`2b06cc3d47782d7c497c07f17cb5f859cd6bbcb66829f3e67b96b7a44820d2ce`를 확인한 뒤 설치한다.
+SHA-1은 배포 페이지의 `ecc45b902ac1e83c8be1758a257e67492de37456`와 일치했다.
+파일 해시는 그 다운로드 파일의 동일성 확인용이며, 그 자체로 배포자를 인증하지 않는다.
+ADBKeyBoard 원저장소 APK는 Android Debug 인증서로 서명되어 있다.
+
+### 3. 게스트에 APK 설치 후 웹 콘솔 기동
+
+위의 `TASK_APK_DIR` 변수를 설정한 같은 터미널에서 실행한다.
+Mac 홈은 공유하지 않으므로 APK를 `limactl copy`로 전달해야 한다.
+
+```bash
+limactl shell --workdir / kakao mkdir -p /tmp/kakao-apks
+limactl copy "$TASK_APK_DIR/com.kakao.talk.apk" \
+  "$TASK_APK_DIR/config.arm64_v8a.apk" "$TASK_APK_DIR/config.en.apk" \
+  "$TASK_APK_DIR/config.mdpi.apk" "$TASK_APK_DIR/ADBKeyboard.apk" \
+  kakao:/tmp/kakao-apks/
+limactl shell --workdir / kakao adb connect 127.0.0.1:5555
+limactl shell --workdir / kakao adb -s 127.0.0.1:5555 install-multiple \
+  /tmp/kakao-apks/com.kakao.talk.apk /tmp/kakao-apks/config.arm64_v8a.apk \
+  /tmp/kakao-apks/config.en.apk /tmp/kakao-apks/config.mdpi.apk
+limactl shell --workdir / kakao adb -s 127.0.0.1:5555 install /tmp/kakao-apks/ADBKeyboard.apk
+scripts/lima-compose.sh up -d --build
+scripts/lima-compose.sh ps -a
+
+# 정상 상태: redroid healthy / boot Exited (0) / webui Up
+curl -fsS http://127.0.0.1:8800/api/state
+limactl shell --workdir / kakao sudo docker exec kakao-webui-1 \
+  python -m kakao_cli doctor --connect redroid:5555 --serial redroid:5555 --json
+```
+
+`api/state`의 `status`가 `ready`, doctor의 `ok`가 true인지 확인한다.
+브라우저에서 **http://127.0.0.1:8800**을 열고 `Use with Main Device`(다른 기기와 함께 사용)를
+선택한 상태로 `QR Code Log In`을 누른다. 폰 카카오톡에서 QR 스캔과 인증을 직접 진행한다.
+boot 스크립트는 앱 실행·권한·입력기 설정만 하며 로그인이나 메시지 전송은 하지 않는다.
+
+### 4. 재실행·상태 확인·종료
+
+```bash
+# 이미 생성한 VM 재실행. APK 재설치 없이 기존 /data를 사용한다.
+limactl start kakao
+scripts/lima-compose.sh up -d redroid
+# Android 재부팅 시 adb root가 초기화되므로 boot를 명시적으로 다시 실행한다.
+scripts/lima-compose.sh run --rm boot
+scripts/lima-compose.sh up -d webui
+
+# 상태 / 로그 / TUI
+scripts/lima-compose.sh ps -a
+scripts/lima-compose.sh logs --tail 30 boot webui
+limactl shell --workdir / kakao sudo docker exec -it kakao-webui-1 \
+  python -m kakao_cli tui --serial redroid:5555
+
+# 컨테이너만 종료 (VM은 계속 실행)
+scripts/lima-compose.sh stop
+# VM까지 종료 (Android 데이터·이미지·볼륨 보존)
+limactl stop kakao
+limactl list
+```
+
+종료 후 `kakao Stopped`인지 확인한다. `limactl delete`나 `docker compose down -v`는
+일상 종료에 사용하지 않는다. TUI에서 송신할 때는 웹 콘솔 탭을 닫거나 미러 모드로 바꿔
+가상 디스플레이의 송신 잠금을 해제한다.
+
+래퍼 기본 명령은 `config --quiet`이며 VM을 자동 생성하거나 시작하지 않는다.
+Git 추적 **경로의 현재 파일 내용**을 tar로 `/opt/kakao-cli`에 전달한다. 추적 파일의 미커밋 수정은
+반영되지만 새 미추적 파일은 전달되지 않는다. DB·.env·키 확장자는 추적돼 있어도 제외한다.
+`--workdir /` 또는 게스트 절대 경로를 지정해야 Mac 작업 경로를 게스트에서 찾는 오류를 피할 수 있다.
+`KAKAO_LIMA_INSTANCE`로 다른 인스턴스를 선택하면 위의 직접 `limactl` 명령에도 같은 이름을 사용한다.
+템플릿의 CPU·메모리·디스크·provision 변경은 이미 생성된 VM에 자동 적용되지 않는다.
+
+### 문제 해결: 실제 독립 기동에서 확인한 항목
+
+- **binder Permission denied / Android 서비스 재시작 반복**: 기존 0660 root:root 노드에
+  Android의 여러 UID가 접근하지 못했다. Lima 템플릿의 준비 스크립트는 전용 VM 내부의 세 노드를
+  0666으로 만든다. 기존 VM은 게스트 `/usr/local/sbin/kakao-prepare-binder`와
+  `~/.lima/kakao/lima.yaml`의 provision에도 수정이 반영됐는지 확인한다.
+- **설치했는데 ADBKeyBoard APK를 먼저 설치하라는 오류**: `ime list -s`는 비활성 입력기를
+  보여주지 않았다. `compose-boot.sh`는 `ime list -a -s`로 확인한 뒤 enable/set하도록 수정했다.
+  이전 이미지라면 `scripts/lima-compose.sh up -d --build`로 다시 빌드한다.
+- **Mac provenance tar 경고**: Linux tar가 `LIBARCHIVE.xattr.com.apple.provenance`를
+  무시한다는 경고가 나왔으나 전송·빌드·기동은 성공했다. `COPYFILE_DISABLE=1`만으로는
+  사라지지 않아 릴리즈 래퍼에 `tar --no-xattrs`를 추가했다.
+- **Compose buildx 경고**: buildx가 없어도 기본 Docker builder로 이미지 빌드가 완료됐다.
+- **DB 수신용 root**: redroid는 userdebug 이미지이며 boot가 `adb root`를 설정한다.
+  Compose의 restart 정책과 종료된 1회성 boot는 다르므로 재실행 때 위 `run --rm boot`를 사용한다.
+
+```bash
+# 상태가 정상화되지 않을 때 (실행 중인 VM에서)
+limactl shell --workdir / kakao sudo tail -n 40 /var/log/cloud-init-output.log
+limactl shell --workdir / kakao sudo systemctl status kakao-binder.service --no-pager
+limactl shell --workdir / kakao ls -l /dev/binderfs
+limactl shell --workdir / kakao sudo docker exec kakao-redroid-1 \
+  /system/bin/sh -c 'getprop sys.boot_completed; logcat -d -t 80 -s ProcessState'
+```
 
 ARM VM은 x86 VM의 /data를 가져오지 않고 새 데이터로 로그인한다.
 아키텍처/키스토어/기기 바인딩 차이 때문에 데이터 이전을 보장할 수 없다.
 카카오 태블릿 슬롯이 하나라고 가정하므로 **Mac 로그인 시 기존 VM 세션 해제 가능성**을
-사용자가 판단해야 한다. Mac 실제 부팅·로그인은 이번 검증 범위 밖이다.
+사용자가 판단해야 한다. Mac 실제 부팅은 아래와 같이 확인했고 계정 로그인은 사용자 진행 단계다.
+
+### Mac 독립 기동 확인 (2026-10-21)
+
+- Lima 2.2.1 / VZ / Ubuntu 24.04 arm64, CPU 2개·메모리 4GiB·디스크 20GiB.
+- `kakao-redroid-1` healthy, `kakao-boot-1` Exited 0, `kakao-webui-1` 실행 확인.
+- 웹 `http://127.0.0.1:8800`의 상태 ready, scrcpy 가상 화면 연결 확인.
+- 카카오톡 26.8.3 ARM64 split APK는 APKPure에서 내려받아 `apksigner verify`로
+  네 APK 모두 검증했다. 인증서 SHA-256은
+  `2b06cc3d47782d7c497c07f17cb5f859cd6bbcb66829f3e67b96b7a44820d2ce`.
+  ADBKeyBoard는 원저장소 `senzhk/ADBKeyBoard`의 APK를 설치했다.
+- `doctor` ok, 로그인 화면의 `Use with Main Device` 선택 및 `QR Code Log In` 표시 확인.
+  사용자가 웹 화면을 확인한 뒤 VM을 정상 종료하고 `Stopped`와 8800 리스너 해제를 확인했다.
+  계정 로그인·DB 수신·메시지 송수신·VM 재기동 후 로그인 유지는 아직 검증하지 않았다.
+- 첫 기동에서 host binder 노드의 0660 권한으로 Android UID의 접근이 거부돼,
+  전용 Lima VM의 준비 스크립트를 0666으로 수정했다.
+- 새 입력기는 비활성 상태이므로 boot가 `ime list -a -s`로 설치 여부를 확인한 뒤 활성화한다.
+  배포 테스트 `tests/test_deploy.py` 4개 통과.
 
 ## VM 108 전환 완료 (2026-10-20, Hermes)
 
