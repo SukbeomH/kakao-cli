@@ -342,6 +342,9 @@ def test_video_stream_endpoint_fmp4_and_annexb():
             else:
                 assert init == CONFIG
             t, m1 = _read_frame(r)
+            if fmt == "fmp4":
+                assert t == 4 and json.loads(m1) == {"key_time": 0}
+                t, m1 = _read_frame(r)
             t2, m2 = _read_frame(r)
             assert t == t2 == 3
             if fmt == "fmp4":
@@ -349,6 +352,13 @@ def test_video_stream_endpoint_fmp4_and_annexb():
             else:
                 assert m1[:9] == struct.pack(">BQ", 1, 20) and m1[9:] == KEY
                 assert m2[:9] == struct.pack(">BQ", 0, 30)
+            if fmt == "fmp4":
+                # A keyframe's buffer timestamp follows the contiguous muxer
+                # timeline, not the scrcpy clock (which may have a long gap).
+                br.on_video(("frame", 60_000_000, True, KEY))
+                t, key_meta = _read_frame(r)
+                assert t == 4 and json.loads(key_meta) == {"key_time": 0.034333}
+                assert _read_frame(r)[0] == 3
             r.close(); c.close()
             for _ in range(100):                     # closed tab noticed without any new frame
                 if not hub.subs:
@@ -372,6 +382,21 @@ def test_video_unavailable_without_scrcpy():
         assert r.status == 503
     finally:
         httpd.shutdown()
+
+
+def test_mse_buffer_retains_keyframes_with_sparse_encoder_output():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is needed to execute the MSE buffer regression")
+    source = "function mseSink(){" + webui.PAGE.split("function mseSink(){", 1)[1].split("// flex:", 1)[0]
+    test = Path(__file__).with_name("webui_mse_buffer.js")
+    result = subprocess.run([node, str(test)], input=source, text=True,
+                            capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_input_routes_to_the_display_the_viewer_sees():

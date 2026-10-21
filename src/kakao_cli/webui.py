@@ -450,7 +450,8 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
         def _video_stream(self):
             """Framed binary stream: [type u8][len u32][payload]
                1 meta JSON {w,h,codec,mode} · 2 init (fmp4) / SPS+PPS (annexb)
-               3 media: fmp4 moof+mdat, or annexb [key u8][pts u64][access unit]."""
+               3 media: fmp4 moof+mdat, or annexb [key u8][pts u64][access unit]
+               4 fmp4 keyframe metadata: {key_time} on the muxer's media timeline."""
             h = state.hub
             if h is None:
                 return self._json(503, {"error": "video unavailable (scrcpy not running)"})
@@ -509,8 +510,11 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                             put(2, cfg)
                         ready = True
                     if mux:
+                        key_time = mux.next_dts / fmp4.TIMESCALE
                         frag = mux.frame(pts, key, data)
                         if frag:
+                            if key:
+                                put(4, json.dumps({"key_time": key_time}).encode())
                             put(3, frag)
                     else:
                         put(3, struct.pack(">BQ", 1 if key else 0, pts) + data)
@@ -1384,20 +1388,32 @@ function wcSink(){
 }
 function mseSink(){
   const v = $("vvideo");
-  let ms = null, sb = null, q = [];
+  let ms = null, sb = null, q = [], keyTimes = [];
   function pump(){
     if(!sb || sb.updating) return;
-    if(q.length){ try{ sb.appendBuffer(q.shift()); }catch(e){ fallback("mse", e.message); } return; }
     const b = v.buffered;                     // stay at the live edge
     if(b.length){
       const end = b.end(b.length-1);
       if(end - v.currentTime > 0.35) v.currentTime = Math.max(0, end - 0.05);
-      if(b.start(0) < v.currentTime - 20){ try{ sb.remove(b.start(0), v.currentTime - 10); }catch(_){} }
+      // Removing an arbitrary time also removes dependent frames up to the next
+      // keyframe. With sparse scrcpy keys that can include the entire live GOP.
+      // Keep a known keyframe at least 10s behind playback, including a small
+      // margin for MSE's sequence-mode timestamp rounding. If none is known,
+      // retain the buffer; old servers without type 4 remain playable.
+      let keep = null;
+      for(const t of keyTimes){ if(t <= v.currentTime - 10) keep = t; }
+      if(keep !== null && b.start(0) < keep - 0.001){
+        try{ sb.remove(b.start(0), keep - 0.001); keyTimes = keyTimes.filter(t=>t >= keep); }
+        catch(e){ fallback("mse", e.message); }
+        return;
+      }
     }
+    // Prune before appending as a continuous stream may never empty the queue.
+    if(q.length){ try{ sb.appendBuffer(q.shift()); }catch(e){ fallback("mse", e.message); } return; }
     if(v.paused) v.play().catch(()=>{});
   }
   function reset(codec){
-    q = []; sb = null;
+    q = []; sb = null; keyTimes = [];
     ms = new MediaSource(); v.src = URL.createObjectURL(ms);
     ms.addEventListener("sourceopen", ()=>{
       try{ sb = ms.addSourceBuffer('video/mp4; codecs="' + codec + '"'); }
@@ -1409,6 +1425,8 @@ function mseSink(){
   v.addEventListener("timeupdate", pump);
   return (t, p)=>{
     if(t===1){ const m = JSON.parse(new TextDecoder().decode(p)); onMeta(m); reset(m.codec); }
+    else if(t===4){ const m = JSON.parse(new TextDecoder().decode(p));
+      if(Number.isFinite(m.key_time) && m.key_time >= 0) keyTimes.push(m.key_time); }
     else if(t===2 || t===3){ q.push(p.slice()); pump(); if(t===3) vframe(); }
   };
 }
