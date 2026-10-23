@@ -15,6 +15,7 @@ next keyframe (never mid-GOP) and a fresh keyframe is requested on join.
 """
 from __future__ import annotations
 import queue
+from collections import deque
 import threading
 import time
 
@@ -26,6 +27,8 @@ GRACE_S = 5.0
 VD_TIMEOUT_S = 8.0
 MAX_VD_SIDE = 1920
 MIN_VD_SIDE = 320
+FRAME_AGE_S = 0.250
+QUALITY_SIDES = (960, 1280, 1440, 1920)
 
 
 def vd_geometry(css_w: float, css_h: float, dpr: float, dpi_mode="auto",
@@ -51,10 +54,29 @@ def vd_geometry(css_w: float, css_h: float, dpr: float, dpi_mode="auto",
     return w, h, max(80, min(640, dpi))
 
 
+class FrameQueue(queue.Queue):
+    """Track local enqueue time; device PTS is not a host wall clock."""
+    def _init(self, maxsize):
+        super()._init(maxsize)
+        self.times = deque()
+
+    def _put(self, item):
+        super()._put(item)
+        self.times.append(time.monotonic() if item[0] == "frame" else None)
+
+    def _get(self):
+        self.times.popleft()
+        return super()._get()
+
+    def stale(self):
+        with self.mutex:
+            return any(t is not None and time.monotonic() - t > FRAME_AGE_S for t in self.times)
+
+
 class Sub:
     def __init__(self, fmt: str):
         self.fmt = fmt
-        self.q: queue.Queue = queue.Queue(maxsize=240)
+        self.q = FrameQueue(maxsize=32)
         self.need_key = True
         self.waiting_since = time.time()
 
@@ -68,13 +90,17 @@ class Sub:
 
 class VideoHub:
     def __init__(self, bridge, dev, mode: str = "virtual", max_fps: int = 60,
-                 bit_rate: int = 4_000_000, max_size: int = 1280, dpi_mode="auto"):
+                 bit_rate: int = 4_000_000, max_size: int = 1280, dpi_mode="auto", vd_max_size: int = 1280):
         self.bridge = bridge
         self.dev = dev
         self.lock = threading.Lock()
         self.subs: list[Sub] = []
         self.mode = mode if mode in ("virtual", "mirror") else "virtual"
         self.max_fps, self.bit_rate, self.max_size, self.dpi_mode = max_fps, bit_rate, max_size, dpi_mode
+        if vd_max_size not in QUALITY_SIDES:
+            raise ValueError("vd_max_size must be 960, 1280, 1440 or 1920")
+        self.vd_max_size = vd_max_size
+        self.css_size = None
         self.vd = None                 # (w, h, dpi) requested for the virtual display
         self.wh = None                 # current stream size (session packet)
         self.config = None             # latest SPS/PPS (Annex-B)
@@ -100,11 +126,13 @@ class VideoHub:
 
     # ---------------------------------------------------------------- control
     def _opts(self):
-        o = {"max_fps": self.max_fps, "video_bit_rate": self.bit_rate}
+        o = {"max_fps": self.max_fps, "video_bit_rate": self.bit_rate,
+             "video_codec_options": "i-frame-interval=1"}
         if self.mode == "virtual" and self.vd:
             w, h, dpi = self.vd
             o.update({"new_display": "%dx%d/%d" % (w, h, dpi), "flex_display": "true",
-                      "vd_destroy_content": "false", "display_ime_policy": "local"})
+                      "vd_destroy_content": "false", "vd_system_decorations": "false",
+                      "display_ime_policy": "local"})
         else:
             o["max_size"] = self.max_size
         return o
@@ -129,7 +157,8 @@ class VideoHub:
             self.subs.append(sub)
             first = not self.active
             if size and self.mode == "virtual" and (first or self.vd is None):
-                self.vd = vd_geometry(*size, dpi_mode=self.dpi_mode)
+                self.css_size = size
+                self.vd = vd_geometry(*size, dpi_mode=self.dpi_mode, max_side=self.vd_max_size)
             if not first:
                 if self.wh:
                     sub.put(("session",) + self.wh)
@@ -167,7 +196,8 @@ class VideoHub:
         """Flex: follow the browser's screen area (virtual mode only)."""
         if self.mode != "virtual":
             return {"mode": self.mode}
-        w, h, dpi = vd_geometry(css_w, css_h, dpr, dpi_mode=self.dpi_mode)
+        self.css_size = (css_w, css_h, dpr)
+        w, h, dpi = vd_geometry(css_w, css_h, dpr, dpi_mode=self.dpi_mode, max_side=self.vd_max_size)
         with self.lock:
             old = self.vd
             self.vd = (w, h, dpi)
@@ -181,6 +211,19 @@ class VideoHub:
             except Exception as e:
                 return {"error": str(e)}
         return {"w": w, "h": h, "dpi": dpi, "applied": True}
+
+    def set_quality(self, max_side):
+        if isinstance(max_side, bool) or max_side not in QUALITY_SIDES:
+            raise ValueError("max_side must be 960, 1280, 1440 or 1920")
+        if self.vd_max_size == max_side:
+            return self.info()
+        self.vd_max_size = int(max_side)
+        if self.css_size:
+            # Also remember geometry while mirroring, for the next virtual session.
+            self.vd = vd_geometry(*self.css_size, dpi_mode=self.dpi_mode, max_side=self.vd_max_size)
+            if self.mode == "virtual" and self.active:
+                self._start_video()
+        return self.info()
 
     def set_mode(self, mode: str) -> dict:
         if mode not in ("virtual", "mirror"):
@@ -225,6 +268,7 @@ class VideoHub:
             return
         if kind == "session":
             self.wh = (ev[1], ev[2])
+            self.config = None
             self._session_seen = time.time()
             self._vd_deadline = None
         elif kind == "config":
@@ -236,6 +280,8 @@ class VideoHub:
             subs = list(self.subs)
         for sub in subs:
             if kind == "frame":
+                if sub.q.stale():
+                    self._resync(sub)
                 if sub.need_key:
                     if not ev[2]:
                         if time.time() - sub.waiting_since > 1.0:
@@ -243,22 +289,30 @@ class VideoHub:
                         continue
                     sub.need_key = False
                 if not sub.put(ev):                # slow viewer: resync on the next key
-                    sub.need_key = True
-                    sub.waiting_since = time.time()
-                    try:
-                        while True:
-                            sub.q.get_nowait()
-                    except queue.Empty:
-                        pass
-                    if self.wh:
-                        sub.put(("session",) + self.wh)
-                    if self.config:
-                        sub.put(("config", self.config))
+                    self._resync(sub)
+                    if ev[2]:
+                        sub.need_key = False
+                        sub.put(ev)
             else:
                 if kind == "session":
-                    sub.need_key = True
-                    sub.waiting_since = time.time()
-                sub.put(ev)
+                    self._resync(sub, request=False)
+                else:
+                    sub.put(ev)
+
+    def _resync(self, sub, request=True):
+        sub.need_key = True
+        sub.waiting_since = time.time()
+        try:
+            while True:
+                sub.q.get_nowait()
+        except queue.Empty:
+            pass
+        if self.wh:
+            sub.put(("session",) + self.wh)
+        if self.config:
+            sub.put(("config", self.config))
+        if request:
+            self._request_key()
 
     # ------------------------------------------------------- housekeeping
     def _heartbeat(self):
@@ -291,4 +345,5 @@ class VideoHub:
                 "w": self.wh[0] if self.wh else None, "h": self.wh[1] if self.wh else None,
                 "vd": list(self.vd) if self.vd else None, "fps": round(fps, 1),
                 "kbps": round(kbps), "note": self.note,
+                "max_side": self.vd_max_size, "max_fps": self.max_fps,
                 "connected": bool(self.bridge.connected and self.bridge.video)}

@@ -6,13 +6,13 @@ Lima VM 디스크, Android `/data`, ADB 키, 로그인 상태와 개인 캐시�
 
 ## 사용자 설치
 
-Releases의 **`kakao-cli-0.1.1-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
+Releases의 **`kakao-cli-0.1.2-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
 GitHub가 자동 생성하는 Source code 압축파일 대신 첨부된 설치 패키지를 사용한다.
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
-tar -xzf kakao-cli-0.1.1-macos-arm64.tar.gz
-cd kakao-cli-0.1.1-macos-arm64
+tar -xzf kakao-cli-0.1.2-macos-arm64.tar.gz
+cd kakao-cli-0.1.2-macos-arm64
 brew install lima
 bash scripts/setup-macos.sh
 ```
@@ -32,13 +32,21 @@ bash scripts/setup-macos.sh
 ```
 
 신규 설치기 자동 흐름은 VM/설치를 대체한 모의 테스트로 검증했다.
-실제 확인한 범위는 수동 설치 후 Android 정상 부팅·doctor·웹 콘솔·로그인 화면과 정상 종료다.
-계정 로그인·메시지 송수신·재부팅 후 로그인 유지는 미검증이므로 preview로 배포한다.
+실제 확인한 범위는 수동 설치 후 Android 정상 부팅·doctor·웹 콘솔·로그인 화면과 정상 종료,
+기존 로그인 계정의 콘솔 재생·DB 읽기·대화 목록 전환이다.
+신규 자동 설치 전체 흐름·실제 메시지/파일 송신·재부팅 후 로그인 유지는 미검증이므로 preview로 배포한다.
 상세 단계와 문제 해결은 [Mac 가이드](deploy-compose.md#apple-silicon-mac)를 참고한다.
 
 v0.1.1에는 LAN HTTP에서 자동 선택되는 MSE 영상이 약 1분 후 멈추던 문제의 수정이 포함된다.
 기존 원격 서버는 [수정·적용 기록](verification/2026-10-21-mse-buffer.md)의 webui 갱신 절차를
 따르고, 갱신 후 브라우저도 새로고침한다.
+
+v0.1.2는 실시간 드래그·세로 휠, 입력 순서/영상 대기열 개선, 960~1920 품질 선택,
+파일 탐색 팝업과 하단 조작 버튼, CLI·TUI의 준비 상태 확인/DB 검사 재사용/변경 시 다시 그리기를 포함한다.
+[웹 검증](verification/2026-10-23-console-performance.md)과
+[CLI·TUI 검증](verification/2026-10-23-cli-tui-performance.md)에 측정 조건과 한계가 있다.
+기존 서버는 webui만 갱신해 적용할 수 있다. **Android 60Hz 설정은 Android 컨테이너 재생성이 필요**하다.
+기존 `/data`와 ADB 상태 볼륨을 유지하며 [60Hz 적용 절차](deploy-compose.md#콘솔-반응성과-2460fps-설정)를 따른다.
 
 ## 내려받는 배포물
 

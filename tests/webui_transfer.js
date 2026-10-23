@@ -43,6 +43,7 @@ const hasRow = (p, w, n) => p.waitForFunction(([w,n])=>[...document.querySelecto
   try {
     await p.goto(BASE, {waitUntil:'domcontentloaded'});
     await p.waitForFunction(()=>document.querySelectorAll('#flist-android .frow').length>2, null, {timeout:30000});
+    await p.click('#files-open');
     // watch every job text so we can prove progress was reported mid-upload
     await p.evaluate(()=>{ window.__pct=[]; new MutationObserver(()=>{
       for (const j of document.querySelectorAll('#jobs .job')){ const m=j.textContent.match(/(\d+)%/);

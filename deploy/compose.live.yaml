@@ -1,11 +1,11 @@
-# VM 108 live overlay: keep the pre-compose runtime identical (no memfd, no binderfs node binds;
-# the privileged redroid allocates binder itself as before) and expose the console on the LAN.
+# VM 108 live overlay: preserve data/binder setup, explicitly use 60Hz, and expose on the LAN.
 services:
   redroid:
     command:
       - androidboot.redroid_width=1600
       - androidboot.redroid_height=2560
       - androidboot.redroid_dpi=340
+      - androidboot.redroid_fps=${KAKAO_ANDROID_FPS:-60}
       - androidboot.redroid_gpu_mode=guest
       - ro.product.manufacturer=samsung
       - ro.product.brand=samsung

@@ -203,6 +203,7 @@ def test_release_archive_excludes_local_state_and_refuses_tracked_binaries(tmp_p
         'pyproject.toml': '[project]\nversion="0.1.0"\n',
         'scripts/setup-macos.sh': '#!/bin/sh\n',
         'scripts/download-apks.py': '# source\n',
+        'scripts/benchmark-console.cjs': '// source\n',
         'scripts/kakao-binder.service': '[Unit]\n',
         'deploy/apks.json': '{}\n',
         'deploy/lima.yaml': 'cpus: 2\n',

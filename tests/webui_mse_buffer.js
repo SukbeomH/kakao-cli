@@ -4,16 +4,22 @@ const vm = require('node:vm');
 const source = require('node:fs').readFileSync(0, 'utf8');
 const listeners = {}, removed = [], appended = [], failures = [];
 let ranges = [[0, 46]], open, updating = false;
+let frameCallback, rendered = 0, revoked = 0, cancelled = 0;
 const sb = {
   get updating(){ return updating; },
   appendBuffer(p){ appended.push(p); updating = true; },
   remove(a,b){ removed.push([a,b]); updating = true; },
   addEventListener(name, cb){ listeners[name] = cb; },
+  removeEventListener(name){ delete listeners[name]; },
 };
 const video = {
   currentTime: 45.95, paused: false,
+  dataset:{},
   get buffered(){ return {length:ranges.length, start:i=>ranges[i][0], end:i=>ranges[i][1]}; },
   addEventListener(name,cb){ listeners[name] = cb; },
+  removeEventListener(name){ delete listeners[name]; },
+  requestVideoFrameCallback(cb){ frameCallback=cb; return 1; },
+  cancelVideoFrameCallback(){ cancelled++; },
   play(){ return Promise.resolve(); },
 };
 class MediaSource {
@@ -21,8 +27,8 @@ class MediaSource {
   addSourceBuffer(){ return sb; }
 }
 const context = vm.createContext({
-  $:()=>video, MediaSource, TextDecoder, URL:{createObjectURL:()=> 'blob:test'},
-  onMeta(){}, vframe(){}, fallback:(...args)=>failures.push(args),
+  $:()=>video, MediaSource, TextDecoder, URL:{createObjectURL:()=> 'blob:test', revokeObjectURL(){revoked++;}},
+  onMeta(){}, vframe(){rendered++;}, fallback:(...args)=>failures.push(args),
 });
 vm.runInContext(source + '; this.sink = mseSink();', context);
 const send = (t, data)=>context.sink(t, new TextEncoder().encode(JSON.stringify(data)));
@@ -49,4 +55,11 @@ assert.equal(removed.length, 1, 'do not repeatedly remove the retained boundary'
 ranges = [[0,46]]; send(1, {codec:'avc1.42C029'}); open(); listeners.timeupdate();
 assert.equal(removed.length, 1);
 assert.equal(failures.length, 0);
-console.log('PASS: sparse keys, legacy server, queued appends and session reset');
+assert.equal(rendered,0,'incoming packets must not count as presented frames');
+frameCallback(); assert.equal(rendered,1);
+context.sink.dispose(); frameCallback();
+assert.equal(rendered,1,'a disposed sink must stop counting frames');
+assert.equal(cancelled,1);
+assert.equal(listeners.timeupdate,undefined);
+assert.ok(revoked>=3,'release old MediaSource object URLs');
+console.log('PASS: sparse keys, legacy server, queued appends, reset, presentation FPS and cleanup');

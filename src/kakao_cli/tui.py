@@ -51,21 +51,27 @@ class TUI:
         try:
             while True:
                 kind, data = self.w.events.get_nowait()
-                changed = True
                 if kind == "rooms":
-                    self.rooms = data
-                    self.sel = min(self.sel, max(0, len(self.rooms) - 1))
+                    sel = min(self.sel, max(0, len(data) - 1))
+                    if data != self.rooms or sel != self.sel:
+                        self.rooms, self.sel = data, sel
+                        changed = True
                 elif kind == "status":
-                    self.status = data
+                    if self.status != data:
+                        self.status = data
+                        changed = True
                 elif kind == "opened":
+                    changed |= self.cur_room != data or self.focus != "input"
                     self.cur_room = data
                     self.focus = "input"
                 elif kind == "messages":
                     room, msgs = data
                     if room == self.cur_room:
                         # worker emits detailed dicts; the TUI only renders text
-                        self.messages = [m["text"] if isinstance(m, dict) else m
-                                         for m in msgs]
+                        messages = [m["text"] if isinstance(m, dict) else m for m in msgs]
+                        if messages != self.messages:
+                            self.messages = messages
+                            changed = True
         except queue.Empty:
             pass
         return changed
@@ -129,17 +135,21 @@ class TUI:
     def loop(self, scr):
         curses.curs_set(1)
         scr.keypad(True)
-        scr.timeout(150)
+        scr.timeout(50)  # worker events appear within one short tick; idle ticks do not redraw
         self.w.start()
+        dirty = True
         while True:
-            self._drain()
-            self._draw(scr)
+            dirty |= self._drain()
+            if dirty:
+                self._draw(scr)
+                dirty = False
             try:
                 ch = scr.get_wch()
             except curses.error:
                 continue          # timeout tick
             except KeyboardInterrupt:
                 break
+            before = (self.sel, self.focus, self.cur_room, self.input)
             if isinstance(ch, str):
                 if self.focus == "list":
                     if ch == "q":
@@ -169,11 +179,12 @@ class TUI:
                 if ch == curses.KEY_UP and self.focus == "list":
                     self.sel = max(0, self.sel - 1)
                 elif ch == curses.KEY_DOWN and self.focus == "list":
-                    self.sel = min(len(self.rooms) - 1, self.sel + 1)
+                    self.sel = min(max(0, len(self.rooms) - 1), self.sel + 1)
                 elif ch == curses.KEY_BACKSPACE and self.focus == "input":
                     self.input = self.input[:-1]
                 elif ch == curses.KEY_RESIZE:
-                    pass
+                    dirty = True
+            dirty |= before != (self.sel, self.focus, self.cur_room, self.input)
         self.w.put("quit")
 
 

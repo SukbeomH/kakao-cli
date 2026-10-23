@@ -140,6 +140,7 @@ def test_hub_subscribe_fanout_and_key_gating():
     opts = br.calls[-1][1]
     assert opts["new_display"] == "928x744/160" and opts["flex_display"] == "true"
     assert opts["vd_destroy_content"] == "false" and "max_size" not in opts
+    assert opts["vd_system_decorations"] == "false" and opts["display_ime_policy"] == "local"
     br.on_connect()                                  # session up → KakaoTalk moved onto the VD
     assert br.sent[-1] == enc_start_app("com.kakao.talk")
     br.on_video(("session", 928, 744, 0))
@@ -204,7 +205,7 @@ def test_hub_resize_and_modes():
     assert r == {"w": 1000, "h": 704, "dpi": 160, "applied": True}
     assert br.sent[-1] == enc_resize_display(1000, 704) and len(br.calls) == n
     hub.resize(500, 700, 2)                          # dpi changes → restart with new_display
-    assert len(br.calls) == n + 1 and br.calls[-1][1]["new_display"] == "1000x1400/320"
+    assert len(br.calls) == n + 1 and br.calls[-1][1]["new_display"] == "912x1280/293"
     info = hub.set_mode("mirror")                    # manual toggle → mirror restart
     assert info["mode"] == "mirror" and "new_display" not in br.calls[-1][1]
     assert br.calls[-1][1]["max_size"] == 1280
@@ -278,6 +279,12 @@ class _Worker:
 
     def put(self, *cmd):
         self.puts.append(cmd)
+
+    def put_wait(self, *cmd):
+        if cmd[0] == "consolekey":
+            cmd[1].key(cmd[2])
+        else:
+            self.put(*cmd)
 
 
 def _png(w, h):
@@ -384,6 +391,21 @@ def test_video_unavailable_without_scrcpy():
         httpd.shutdown()
 
 
+def test_wc_coalesces_frames_and_releases_pending_resources():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is needed to execute the WebCodecs regression")
+    source = "function wcSink(){" + webui.PAGE.split("function wcSink(){", 1)[1].split("let lastVideoKey", 1)[0]
+    test = Path(__file__).with_name("webui_wc_frames.js")
+    result = subprocess.run([node, str(test)], input=source, text=True,
+                            capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_mse_buffer_retains_keyframes_with_sparse_encoder_output():
     import shutil
     import subprocess
@@ -427,3 +449,129 @@ def test_input_routes_to_the_display_the_viewer_sees():
         assert _post(port, "/api/screen/key", {"code": 999999})[0] == 400
     finally:
         httpd.shutdown()
+
+
+def test_live_pointer_wheel_routing_and_expiry(monkeypatch):
+    from kakao_cli.scrcpy import enc_touch, enc_scroll, enc_cancel_touch, ACTION_DOWN, ACTION_MOVE, ACTION_CANCEL
+    monkeypatch.setattr(webui.PointerInput, 'LEASE_S', 0.08)
+    br = _VBridge()
+    hub = video.VideoHub(br, _Dev())
+    httpd, _worker, port = _server(br, hub)
+    try:
+        hub.subscribe('annexb', (928, 744, 1))
+        br.on_video(('session', 928, 744, 0))
+        body = dict(cx=232, cy=186, ew=464, eh=372, iw=928, ih=744, src='video', gesture='one')
+        assert _post(port, '/api/screen/touch', dict(body, action='down'))[0] == 200
+        assert br.sent[-1] == enc_touch(ACTION_DOWN, 464, 372, 928, 744)
+        assert _post(port, '/api/screen/touch', dict(body, action='move', gesture='other'))[0] == 409
+        assert _post(port, '/api/screen/touch', dict(body, action='move'))[0] == 200
+        assert br.sent[-1] == enc_touch(ACTION_MOVE, 464, 372, 928, 744)
+        for _ in range(30):
+            if br.sent[-1][1] == ACTION_CANCEL:
+                break
+            time.sleep(0.01)
+        assert br.sent[-1] == enc_cancel_touch(464, 372, 928, 744)
+        assert br.sent[-1][33] == 1, 'UP must clear scrcpy pointer bookkeeping after Android CANCEL'
+        assert _post(port, '/api/screen/touch', dict(body, action='up'))[0] == 409
+        assert _post(port, '/api/screen/touch', dict(body, action=[]))[0] == 400
+        assert _post(port, '/api/screen/touch', dict(body, src='png', action='down'))[0] == 409
+        assert _post(port, '/api/screen/scroll', dict(body, dx=0.5, dy=-1))[0] == 200
+        assert br.sent[-1] == enc_scroll(464, 372, 928, 744, 0, -1)
+        # Golden protocol values: one notch is 1/16 of the signed fixed point range.
+        assert struct.unpack('>BiiHHhhI', br.sent[-1]) == (3, 464, 372, 928, 744, 0, -2048, 0)
+        before = len(br.sent)
+        assert _post(port, '/api/screen/scroll', dict(body, dx=1, dy=0))[0] == 200
+        assert len(br.sent) == before, 'horizontal-only scroll must never be injected'
+    finally:
+        httpd.shutdown()
+
+
+def test_pointer_resize_or_reconnect_cancels_old_gesture():
+    from kakao_cli.scrcpy import ACTION_DOWN, ACTION_MOVE
+    import pytest
+    br = _VBridge()
+    p = webui.PointerInput()
+    p.send(br, 'one', ACTION_DOWN, 10, 20, 928, 744)
+    with pytest.raises(ValueError, match='display changed'):
+        p.send(br, 'one', ACTION_MOVE, 10, 20, 640, 480)
+    br.scid = 'old'
+    p.send(br, 'two', ACTION_DOWN, 10, 20, 928, 744)
+    br.scid = 'new'
+    before = len(br.sent)
+    with pytest.raises(ValueError, match='display changed'):
+        p.send(br, 'two', ACTION_MOVE, 10, 20, 928, 744)
+    assert len(br.sent) == before, 'never inject an old gesture into a new scrcpy session'
+
+
+def test_quality_preserves_logical_size_and_is_shared():
+    br = _VBridge()
+    hub = video.VideoHub(br, _Dev())
+    sub = hub.subscribe('annexb', (464, 864, 2))
+    w, h, dpi = hub.vd
+    assert h == 1280 and abs(w * 160 / dpi - 464) < 5
+    assert hub.info()['max_fps'] == 60
+    hub.set_quality(960)
+    w, h, dpi = hub.vd
+    assert h == 960 and abs(w * 160 / dpi - 464) < 5
+    assert hub.info()['max_side'] == 960
+    hub.subscribe('annexb', (800, 600, 1))
+    assert hub.vd == (w, h, dpi), 'a second viewer must not change the first viewer geometry'
+    hub.unsubscribe(sub)
+
+
+def test_age_budget_resyncs_before_frame_count_limit(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(video.time, 'monotonic', lambda: now[0])
+    br = _VBridge()
+    hub = video.VideoHub(br, _Dev())
+    sub = hub.subscribe('annexb', (928, 744, 1))
+    br.on_video(('session', 928, 744, 0))
+    br.on_video(('config', CONFIG))
+    br.on_video(('frame', 0, True, KEY))
+    now[0] = video.FRAME_AGE_S + 0.01
+    br.on_video(('frame', 1, False, DELTA))
+    assert [e[0] for e in _drain(sub)] == ['session', 'config']
+    assert sub.need_key and br.sent[-1] == enc_reset_video()
+    br.on_video(('frame', 2, True, KEY))
+    assert _drain(sub) == [('frame', 2, True, KEY)]
+
+
+def test_browser_live_input_and_keyboard_latency():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js required')
+    result = subprocess.run([node, str(Path(__file__).with_name('webui_input_latency.js'))],
+                            input=webui.PAGE, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_worker_text_completion_precedes_key_and_surfaces_failure():
+    from kakao_cli.worker import Worker
+    from types import SimpleNamespace
+    import pytest
+    order = []
+    dev = SimpleNamespace()
+    def text(t):
+        time.sleep(0.03)
+        if t == 'fail':
+            raise RuntimeError('IME unavailable')
+        order.append(('text', t))
+    dev.type_text = text
+    w = Worker(dev, chat=False)
+    br = _VBridge()
+    br.key = lambda kc: order.append(('key', kc))
+    w.start()
+    try:
+        w.put_wait('screentext', '한글')
+        w.put_wait('consolekey', br, 66)
+        assert order == [('text', '한글'), ('key', 66)]
+        with pytest.raises(RuntimeError, match='IME unavailable'):
+            w.put_wait('screentext', 'fail')
+        w.put_wait('screentext', '복구')
+        assert order[-1] == ('text', '복구')
+    finally:
+        w.put('quit')

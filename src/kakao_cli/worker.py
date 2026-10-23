@@ -41,6 +41,15 @@ class Worker(threading.Thread):
     def put(self, *cmd):
         self.cmds.put(cmd)
 
+    def put_wait(self, *cmd, timeout=5.0):
+        """Acknowledge completion, so text followed by Enter stays in order."""
+        done, errors = threading.Event(), []
+        self.cmds.put(("wait", cmd, done, errors))
+        if not done.wait(timeout):
+            raise TimeoutError("device input timed out")
+        if errors:
+            raise errors[0]
+
     def _emit(self, kind, data):
         self.events.put((kind, data))
 
@@ -79,7 +88,20 @@ class Worker(threading.Thread):
 
     def _handle(self, cmd):
         op = cmd[0]
-        if op == "quit":
+        if op == "wait":
+            try:
+                self._handle(cmd[1])
+            except Exception as e:
+                cmd[3].append(e)
+            finally:
+                cmd[2].set()
+        elif op == "consolekey":
+            bridge, code = cmd[1:]
+            if bridge:
+                bridge.key(code)
+            else:
+                self.d.dev.keyevent(code)
+        elif op == "quit":
             self._stop = True
         elif op == "rooms":
             self._refresh_rooms()

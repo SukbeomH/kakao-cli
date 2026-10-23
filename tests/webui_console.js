@@ -46,6 +46,7 @@ async function waitJob(p){
     console.log('screen streaming in console center');
     // 3) android pane lists /sdcard/ incl. Download; navigate into it
     await p.waitForFunction(()=>document.querySelectorAll('#flist-android .frow').length>2, null, {timeout:30000});
+    await p.click('#files-open');
     if (!(await rowNames(p,'android')).includes('Download')) die('Download not listed');
     await clickRow(p, 'android', 'Download');
     await p.waitForFunction(()=>document.getElementById('fpath-android').value==='/sdcard/Download/', null, {timeout:30000});
@@ -66,6 +67,7 @@ async function waitJob(p){
     await p.waitForFunction(n=>[...document.querySelectorAll('#flist-local .frow .fn')]
       .some(e=>e.textContent.endsWith(n)), back, {timeout:30000});
     console.log('local pane shows '+back);
+    await p.click('#files-close');
     // 6) keyboard: click the device's message box on the streamed screen, then type
     if (IX && IY) {
       const pt = await p.evaluate(([ix,iy])=>{ const i=document.getElementById('scr'), r=i.getBoundingClientRect();

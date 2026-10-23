@@ -39,7 +39,7 @@ DEVICE_JAR = "/data/local/tmp/kakao-cli-scrcpy-server.jar"
 CLIP_MAX = (1 << 18) - 14          # SET_CLIPBOARD must fit the server's 256 KiB message cap
 
 # Android constants
-ACTION_DOWN, ACTION_UP, ACTION_MOVE = 0, 1, 2
+ACTION_DOWN, ACTION_UP, ACTION_MOVE, ACTION_CANCEL = 0, 1, 2, 3
 
 
 class ScrcpyError(RuntimeError):
@@ -101,11 +101,24 @@ def enc_keycode(action: int, keycode: int, repeat: int = 0, meta: int = 0) -> by
 
 def enc_touch(action: int, x: int, y: int, w: int, h: int,
               pressure: float = 1.0, pointer_id: int = -2) -> bytes:
-    p = 0 if action == ACTION_UP else max(0, min(0xFFFF, int(pressure * 0xFFFF)))
+    p = 0 if action in (ACTION_UP, ACTION_CANCEL) else max(0, min(0xFFFF, int(pressure * 0xFFFF)))
     # pointer -2 = scrcpy's generic finger (touchscreen source); buttons are
     # only for mouse events (-1), so they stay 0 here
     return struct.pack(">BBqiiHHHii", 2, action, pointer_id, int(x), int(y),
                        int(w), int(h), p, 0, 0)
+
+
+def enc_scroll(x: int, y: int, w: int, h: int, dx: float, dy: float) -> bytes:
+    """scrcpy v5: axes in [-16,16], normalized to signed 16-bit fixed point."""
+    def fixed(v):
+        return max(-32768, min(32767, int(float(v) / 16 * 32768)))
+    return struct.pack(">BiiHHhhI", 3, int(x), int(y), int(w), int(h), fixed(dx), fixed(dy), 0)
+
+
+def enc_cancel_touch(x: int, y: int, w: int, h: int) -> bytes:
+    # CANCEL ends the Android gesture without a click. scrcpy v5's PointersState
+    # only removes fingers on UP, so also clear its bookkeeping afterwards.
+    return enc_touch(ACTION_CANCEL, x, y, w, h) + enc_touch(ACTION_UP, x, y, w, h)
 
 
 def enc_set_clipboard(seq: int, text: str, paste: bool) -> bytes:
