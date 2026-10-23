@@ -29,13 +29,16 @@ def test_subcommand_help():
     assert "--yes" in r.stdout and "room" in r.stdout
 
 
-def test_doctor_no_device_is_structured_error():
-    # No adb/device in CI -> must fail with non-zero and JSON error, not a traceback.
-    r = run(["doctor", "--json"])
-    assert r.returncode != 0
+def test_doctor_no_device_is_structured_error(tmp_path):
+    # The developer may have a real device connected; never inspect it in this test.
+    fake_adb = tmp_path / "adb"
+    fake_adb.write_text('#!/bin/sh\n[ "$1" = devices ] || exit 99\nprintf "List of devices attached\\n\\n"\n')
+    fake_adb.chmod(0o755)
+    r = run(["doctor", "--json", "--adb", str(fake_adb)])
+    assert r.returncode == 4
     payload = json.loads(r.stdout)
     assert payload["ok"] is False
-    assert payload["error"] in {"adb_unavailable", "device_not_found", "app_not_installed"}
+    assert payload["error"] == "device_not_found"
 
 
 def test_send_requires_positional_args():
@@ -65,6 +68,9 @@ class _StubWorker:
 
     def put(self, *cmd):
         self.puts.append(cmd)
+
+    def put_wait(self, *cmd):
+        self.put(*cmd)
 
 
 def _http(method, url, body=None):
@@ -233,6 +239,12 @@ def test_webui_screen_control(tmp_path):
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"
     try:
+        # H.264 startup only checks capability; PNG polling still acquires a lease.
+        c, b = _http("GET", base + "/api/screen/info?peek=1")
+        assert c == 200 and _json.loads(b)["has_frame"] is True
+        assert screen.active() is False
+        c, _ = _http("GET", base + "/api/screen/info")
+        assert c == 200 and screen.active() is True
         # tap maps element coords → device coords and enqueues a worker command
         c, b = _http("POST", base + "/api/screen/tap", {"cx": 200, "cy": 320, "ew": 400, "eh": 640})
         assert c == 200

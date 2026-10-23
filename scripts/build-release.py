@@ -12,7 +12,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 TOP_FILES = {"Dockerfile", ".dockerignore", "pyproject.toml", "uv.lock", "README.md", "NOTICE"}
 SOURCE_DIRS = {"src", "scripts", "deploy", "docs", "completions", "tests"}
-SOURCE_SUFFIXES = {".py", ".sh", ".yaml", ".json", ".md", ".txt", ".java", ".js", ".1", ".service"}
+SOURCE_SUFFIXES = {".py", ".sh", ".yaml", ".json", ".md", ".txt", ".java", ".js", ".cjs", ".1", ".service"}
 
 
 def source_files(root):

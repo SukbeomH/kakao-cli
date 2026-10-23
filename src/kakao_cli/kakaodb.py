@@ -130,6 +130,8 @@ def unread_count(log_id, sender, members, watermarks, self_id):
 
 
 class Database:
+    GUARD_TTL = 30.0  # process-local schema metadata only; every call still probes identity
+
     def __init__(self, dev):
         self.dev = dev
         self.self_id = None
@@ -137,6 +139,7 @@ class Database:
         self.open_links = {}
         self.crypto_users, self.crypto_channels = {}, {}
         self.crypto_available = False
+        self.invalidate_guard()
         self.guard()
         own = self._query('KakaoTalk.db',
             "SELECT DISTINCT user_id FROM chat_logs WHERE json_extract(v,'$.isMine')=1")
@@ -161,19 +164,61 @@ class Database:
                 raise ValueError()
             return result
         except (OSError, ValueError, subprocess.SubprocessError):
+            self.invalidate_guard()
             raise DBUnavailable('기기 DB 읽기 실패(sqlite3 -readonly -json 필요)') from None
 
-    def guard(self):
-        out = self.dev.shell('dumpsys package com.kakao.talk | grep versionCode')
-        match = re.search(r'\bversionCode=(\d+)\b', out)
+    def invalidate_guard(self):
+        self._guard_key = None
+        self._guard_until = 0.0
+
+    def _guard_fingerprint(self):
+        # One read-only round trip, no account/message data. A schema_version
+        # change, DB replacement, reboot or different Device invalidates reuse.
+        path = shlex.quote(ROOT + 'KakaoTalk.db')
+        out = self.dev.shell('cat /proc/sys/kernel/random/boot_id && stat -c %d:%i ' + path +
+            ' && dumpsys package com.kakao.talk | grep -m1 versionCode && '
+            'sqlite3 -readonly -json ' + path + " 'PRAGMA schema_version;'")
+        lines = out.strip().splitlines()
+        if len(lines) < 4 or not re.fullmatch(r'[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}', lines[0]):
+            raise DBUnavailable('DB 호환성 식별 정보를 확인하지 못했습니다')
+        if not re.fullmatch(r'\d+:\d+', lines[1]):
+            raise DBUnavailable('DB 파일 식별 정보를 확인하지 못했습니다')
+        match = re.search(r'\bversionCode=(\d+)\b', lines[2])
         if not match or int(match[1]) != VERSION_CODE:
             raise DBUnavailable('검증되지 않은 앱 versionCode: UI 수신으로 폴백합니다')
+        schema = json.loads('\n'.join(lines[3:]))
+        if (not isinstance(schema, list) or len(schema) != 1 or not isinstance(schema[0], dict)
+                or type(schema[0].get('schema_version')) is not int or schema[0]['schema_version'] < 0):
+            raise DBUnavailable('DB 스키마 번호를 확인하지 못했습니다')
+        return (id(self.dev), self.dev.adb, self.dev.serial, lines[0], lines[1],
+                VERSION_CODE, schema[0]['schema_version'])
+
+    def guard(self, force=False):
+        try:
+            key = self._guard_fingerprint()
+            if not force and key == getattr(self, '_guard_key', None) and time.monotonic() < self._guard_until:
+                return
+            self.invalidate_guard()
+            self._check_columns()
+            self._guard_key = key
+            self._guard_until = time.monotonic() + self.GUARD_TTL
+        except DBUnavailable:
+            self.invalidate_guard()
+            raise
+        except Exception:
+            self.invalidate_guard()
+            raise DBUnavailable('DB 호환성 검사 실패: UI 수신으로 폴백합니다') from None
+
+    def _check_columns(self):
         required = {
             'chat_logs': {'_id', 'id', 'type', 'chat_id', 'user_id', 'message', 'attachment', 'created_at', 'v'},
             'chat_rooms': {'id', 'type', 'members', 'active_member_ids', 'watermarks', 'last_read_log_id',
                            'meta', 'private_meta', 'link_id', 'unread_count', 'mute_until_at', 'last_updated_at'}}
+        rows = self._query('KakaoTalk.db',
+            "SELECT 'chat_logs' AS table_name,name FROM pragma_table_info('chat_logs') "
+            "UNION ALL SELECT 'chat_rooms',name FROM pragma_table_info('chat_rooms')")
         for table, cols in required.items():
-            found = {r['name'] for r in self._query('KakaoTalk.db', 'PRAGMA table_info(' + table + ')')}
+            found = {r['name'] for r in rows if r['table_name'] == table}
             if not cols <= found:
                 raise DBUnavailable('DB 필수 열이 변경되었습니다: UI 수신으로 폴백합니다')
 

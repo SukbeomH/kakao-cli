@@ -1,7 +1,7 @@
 """Web UI — a device console in the browser (stdlib only).
 
 The web UI is console-only: the live device screen in the center (click/drag
-→ tap/swipe, keyboard capture → device) and two file managers on the left
+→ tap/swipe, keyboard capture → device) and two file managers in a popup
 (device storage / the webui host's disk) with copy, upload and download.
 Chat lives in the CLI/TUI; the web UI no longer has a chat mode.
 
@@ -12,6 +12,7 @@ transports). No third-party deps, no CDN — the page is inlined.
 """
 from __future__ import annotations
 import json
+import math
 import os
 import queue
 import re
@@ -31,6 +32,7 @@ from .screen import ScreenBuffer, view_to_device
 from .scrcpy import CLIP_MAX, ScrcpySession, ensure_server, ScrcpyError
 from .scrcpy import VERSION as SCRCPY_VERSION
 from .scrcpy import avc_codec_string
+from .scrcpy import enc_touch, enc_scroll, enc_cancel_touch, ACTION_DOWN, ACTION_MOVE, ACTION_UP, ACTION_CANCEL
 from .video import VideoHub
 from . import fmp4
 from .fs import (LocalRoot, shq, parse_stat_lines, android_list_cmd,
@@ -84,6 +86,72 @@ class State:
                 self.seq += 1
 
 
+class PointerInput:
+    """One finger across viewers. A lost tab/request must never leave it down."""
+    LEASE_S = 2.0
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.owner = None
+        self.target = None
+        self.generation = None
+        self.last = None
+        self.timer = None
+        self.touched = 0.0
+
+    def _cancel(self):
+        if self.target and self.last and getattr(self.target, "scid", None) == self.generation:
+            try:
+                self.target.send(enc_cancel_touch(*self.last))
+            except Exception:
+                pass
+        self.owner = self.target = self.last = None
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+
+    def _arm(self, delay):
+        self.timer = threading.Timer(delay, self._expire)
+        self.timer.daemon = True
+        self.timer.start()
+
+    def _expire(self):
+        with self.lock:
+            left = self.LEASE_S - (time.monotonic() - self.touched)
+            if self.owner and left > 0:
+                self._arm(left)
+            else:
+                self._cancel()
+
+    def send(self, bridge, gesture, action, x, y, w, h):
+        with self.lock:
+            if action == ACTION_DOWN:
+                self._cancel()
+            elif self.owner != gesture:
+                raise ValueError("pointer expired or owned by another viewer")
+            elif (self.target is not bridge or self.last[2:] != (w, h)
+                  or getattr(bridge, "scid", None) != self.generation):
+                self._cancel()
+                raise ValueError("display changed during gesture")
+            try:
+                bridge.send(enc_cancel_touch(x, y, w, h) if action == ACTION_CANCEL
+                            else enc_touch(action, x, y, w, h))
+            except Exception:
+                self._cancel()
+                raise
+            if action in (ACTION_UP, ACTION_CANCEL):
+                self.owner = self.target = self.last = None
+                if self.timer:
+                    self.timer.cancel()
+                    self.timer = None
+            else:
+                self.owner, self.target, self.last = gesture, bridge, (x, y, w, h)
+                self.generation = getattr(bridge, "scid", None)
+                self.touched = time.monotonic()
+                if self.timer is None:
+                    self._arm(self.LEASE_S)
+
+
 def _pump(worker: Worker, state: State):
     while True:
         try:
@@ -103,6 +171,7 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
     # freeze the worker's captures/taps); adb's server serializes transports
     jobs: dict[str, dict] = {}
     jobs_lock = threading.Lock()
+    pointer = PointerInput()
 
     def dev():
         return getattr(getattr(worker, "d", None), "dev", None)
@@ -232,8 +301,9 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                     return
                 self._json(200, snap)
             elif path == "/api/screen/info":
-                if screen_enabled:
-                    screen.touch()     # polling info keeps the viewer alive (cheap)
+                q = parse_qs(self.path.partition("?")[2])
+                if screen_enabled and q.get("peek") != ["1"]:
+                    screen.touch()     # PNG polling acquires/renews the capture lease
                 seq, frame, w, h = screen.get()
                 self._json(200, {"enabled": screen_enabled, "seq": seq,
                                  "w": w, "h": h, "has_frame": bool(frame)})
@@ -341,7 +411,7 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._fs_upload()
             elif self.path == "/api/clip":
                 self._clip_post()
-            elif self.path in ("/api/video/resize", "/api/video/mode"):
+            elif self.path in ("/api/video/resize", "/api/video/mode", "/api/video/quality", "/api/video/keyframe"):
                 self._video_post()
             else:
                 self._json(404, {"error": "not found"})
@@ -471,6 +541,10 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
             def put(t, payload):
                 self.wfile.write(struct.pack(">BI", t, len(payload)) + payload)
             try:
+                # Keep a stalled TCP receiver from hiding seconds of old video
+                # outside the hub's bounded queue, or retaining a handler forever.
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 << 10)
+                self.connection.settimeout(2.0)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")
                 self.send_header("Cache-Control", "no-store")
@@ -532,6 +606,11 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 return self._json(503, {"error": "video unavailable"})
             body = self._read_json()
             try:
+                if self.path == "/api/video/keyframe":
+                    h._request_key()
+                    return self._json(200, {"ok": True})
+                if self.path == "/api/video/quality":
+                    return self._json(200, h.set_quality(body.get("max_side")))
                 if self.path == "/api/video/resize":
                     return self._json(200, h.resize(_num(body.get("w")), _num(body.get("h")),
                                                      _num(body.get("dpr"), 1) or 1))
@@ -620,7 +699,7 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
             iw, ih = _num(body.get("iw")), _num(body.get("ih"))
             if not (iw and ih):
                 iw, ih = (vid or (w, h))
-            if op in ("tap", "swipe") and (not iw or not ih):
+            if op in ("tap", "swipe", "touch", "scroll") and (not iw or not ih):
                 return self._json(409, {"error": "no frame yet"})
             def to_target(cx, cy):
                 px, py = view_to_device(_num(cx), _num(cy), _num(body.get("ew")),
@@ -628,6 +707,27 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 nx, ny = px / max(1, iw - 1), py / max(1, ih - 1)
                 tw, th = vid or (w, h)
                 return (int(round(nx * (tw - 1))), int(round(ny * (th - 1))))
+            if op in ("touch", "scroll"):
+                if not vid:
+                    return self._json(409, {"error": "live video required"})
+                x, y = to_target(body.get("cx"), body.get("cy"))
+                try:
+                    if op == "scroll":
+                        dy = _num(body.get("dy"))
+                        if dy:
+                            bridge.send(enc_scroll(x, y, *vid, 0, dy))
+                    else:
+                        actions = {"down": ACTION_DOWN, "move": ACTION_MOVE,
+                                   "up": ACTION_UP, "cancel": ACTION_CANCEL}
+                        action, gesture = body.get("action"), body.get("gesture")
+                        if not isinstance(action, str) or action not in actions or not isinstance(gesture, str) or not 1 <= len(gesture) <= 128:
+                            return self._json(400, {"error": "bad pointer event"})
+                        pointer.send(bridge, gesture, actions[action], x, y, *vid)
+                except ValueError as e:
+                    return self._json(409, {"error": str(e)})
+                except (ScrcpyError, OSError) as e:
+                    return self._json(503, {"error": str(e)})
+                return self._json(200, {"ok": True, "via": "scrcpy"})
             if op == "tap":
                 x, y = to_target(body.get("cx"), body.get("cy"))
                 if vid:
@@ -655,17 +755,23 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                     return self._json(400, {"error": "bad key"})
                 if key_via_scrcpy:
                     try:
-                        bridge.key(kc)
+                        worker.put_wait("consolekey", bridge, kc)
                         return self._json(200, {"ok": True, "via": "scrcpy"})
-                    except Exception:
-                        pass
-                worker.put("key", name if name in named else kc)
+                    except Exception as e:
+                        return self._json(503, {"error": str(e)})
+                try:
+                    worker.put_wait("key", name if name in named else kc)
+                except Exception as e:
+                    return self._json(503, {"error": str(e)})
                 self._json(200, {"ok": True, "via": "adb"})
             elif op == "text":
                 text = body.get("text") or ""
                 if not text:
                     return self._json(400, {"error": "empty text"})
-                worker.put("screentext", text)
+                try:
+                    worker.put_wait("screentext", text)
+                except Exception as e:
+                    return self._json(503, {"error": str(e)})
                 self._json(200, {"ok": True})
             else:
                 self._json(404, {"error": "not found"})
@@ -699,7 +805,8 @@ def _link_unique(part: str, directory: str, name: str) -> str:
 
 def _num(v, default=0):
     try:
-        return float(v)
+        n = float(v)
+        return n if math.isfinite(n) else default
     except (TypeError, ValueError):
         return default
 
@@ -734,7 +841,7 @@ def _is_local(host: str) -> bool:
 def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_screen=False,
         fs_root="~", max_upload=DEFAULT_MAX_UPLOAD, allow_hosts=(), scrcpy_server=None,
         use_scrcpy=True, video_mode="virtual", video_max_fps=60, video_bit_rate=4_000_000,
-        video_max_size=1280, vd_dpi="auto"):
+        video_max_size=1280, vd_dpi="auto", vd_max_size=1280):
     dev = connect(serial, addr, adb=adb)
     tmpdir = tempfile.mkdtemp(prefix="kakao-webui-")
     screen = ScreenBuffer()
@@ -750,7 +857,8 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8800, allow_sc
         try:
             bridge = ScrcpySession(dev, ensure_server(scrcpy_server))
             hub = VideoHub(bridge, dev, mode=video_mode, max_fps=video_max_fps,
-                           bit_rate=video_bit_rate, max_size=video_max_size, dpi_mode=vd_dpi)
+                           bit_rate=video_bit_rate, max_size=video_max_size, dpi_mode=vd_dpi,
+                           vd_max_size=vd_max_size)
             bridge.start()
             bridge_note = "scrcpy-server v%s (Apache-2.0)" % SCRCPY_VERSION
         except (ScrcpyError, OSError) as e:
@@ -826,7 +934,7 @@ PAGE = r"""<!doctype html>
   .statusbar{display:flex;align-items:center;gap:8px;padding-bottom:calc(4px + var(--safe-b))}
   .statusbar #status{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .badge{color:var(--accent);font-size:12px;white-space:nowrap}
-  .console{flex:1 1 auto;display:flex;min-height:0}
+  .console{flex:1 1 auto;display:flex;min-height:0;overflow:hidden}
   .side{flex:0 0 34%;max-width:460px;min-width:260px;display:flex;flex-direction:column;
     border-right:1px solid var(--line);min-height:0}
   .fpane{flex:1 1 50%;display:flex;flex-direction:column;min-height:0;border-bottom:1px solid var(--line)}
@@ -836,7 +944,7 @@ PAGE = r"""<!doctype html>
     border-radius:3px;color:var(--fg);font-family:inherit;font-size:13px;padding:2px 6px;outline:none}
   .fhead .fbtn{color:var(--accent);border:1px solid var(--line);border-radius:3px;padding:1px 8px;
     white-space:nowrap;font-size:12px}
-  .flist{flex:1 1 auto;overflow-y:auto;font-size:13px}
+  .flist{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;font-size:13px}
   .frow{display:flex;gap:8px;padding:3px 10px;cursor:pointer;white-space:nowrap}
   .frow:hover{background:var(--line)}
   .frow .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
@@ -856,17 +964,26 @@ PAGE = r"""<!doctype html>
   .ferr{color:#f7768e;padding:6px 10px;font-size:12px;white-space:normal}
   .empty{color:var(--dim);padding:8px 12px}
   .jobs{flex:0 0 auto;max-height:22%;overflow-y:auto;font-size:12px;padding:2px 8px}
+  .files-dialog{padding:0;color:var(--fg);background:var(--bg);border:1px solid var(--accent);
+    border-radius:6px;width:min(720px,calc(100vw - 24px));height:min(760px,calc(100vh - 24px));
+    height:min(760px,calc(100dvh - 24px));max-width:none;max-height:none;overflow:hidden;
+    box-shadow:0 8px 36px #0008}
+  .files-dialog[open]{display:flex;flex-direction:column}
+  .files-dialog::backdrop{background:rgba(0,0,0,.65)}
+  .files-bar{display:flex;align-items:center;gap:12px;padding:6px 10px;background:var(--bar);flex:0 0 auto}
+  .files-bar h2{font:inherit;color:var(--accent);margin:0;flex:1}
+  .files-bar button{min-height:36px;padding:4px 8px;color:var(--accent)}
+  .files-dialog .side{flex:1 1 auto;max-width:none;min-width:0;border-right:none;overflow:hidden}
   .job{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .job.running{color:var(--unread)} .job.done{color:var(--me)} .job.error{color:#f7768e}
   .center{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;padding:6px}
-  .scrbar{display:flex;gap:6px;align-items:center;padding:4px 0;flex:0 0 auto}
-  .scrbar button{color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:6px 10px;min-height:36px;
+  .controls{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap;border-top:1px solid var(--line)}
+  .controls button{color:var(--accent);border:1px solid var(--line);border-radius:4px;width:clamp(90px,28vw,128px);padding:6px 12px;min-height:36px;
     white-space:nowrap}
-  .scrbar button:hover{background:var(--line)}
-  .scrbar .fps{margin-left:auto;color:var(--dim);font-size:12px;white-space:nowrap}
-  .kbhint{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .controls button:hover{background:var(--line)}
+  #header .fps{color:var(--dim);font-size:12px;white-space:nowrap;flex:0 0 auto}
   .scrwrap{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;
-    background:#000;border:1px solid var(--line);border-radius:4px;position:relative}
+    background:#000;border:1px solid var(--line);border-radius:4px;position:relative;touch-action:none}
   .scrwrap.kbon{box-shadow:0 0 0 2px var(--accent) inset}
   #scr,#vcanvas,#vvideo{max-width:100%;max-height:100%;object-fit:contain;touch-action:none;
     user-select:none;-webkit-user-select:none}
@@ -893,20 +1010,30 @@ PAGE = r"""<!doctype html>
   .panel .help b{color:var(--accent)}
   @media (max-width:720px){
     #header .hint .long{display:none}
-    /* phone: the device screen fills the viewport (→ a portrait virtual display
-       with the phone layout); the file managers sit below it — scroll down */
-    .console{flex-direction:column;overflow-y:auto}
-    .side{flex:0 0 auto;height:85vh;height:85dvh;max-width:none;min-width:0;border-right:none}
-    .center{flex:0 0 auto;order:-1;height:calc(100vh - 64px);
-      height:calc(100dvh - 64px - var(--safe-t) - var(--safe-b))}
-    .scrbar button{min-height:40px}
+    .console{flex-direction:column}
+    .controls button{min-height:40px}
+    .statusbar{flex-wrap:wrap;gap:4px}
+    .statusbar #status{flex:1 0 100%}
+    .statusbar #vmode{max-width:100%;overflow:hidden;text-overflow:ellipsis}
   }
 </style></head>
 <body>
   <div class="bar" id="header"><span class="hint"><span class="k">kakao-cli</span> 콘솔<span class="long"> —
-    화면 클릭: 탭·키보드 · 드래그: 스와이프 · Esc: 키보드 해제</span></span>
+    화면 클릭: 탭·키보드 · 드래그·휠: 스크롤 · Esc: 키보드 해제</span></span>
+    <span class="fps" id="cfps" title="영상 프레임률"></span>
+    <button id="files-open" aria-haspopup="dialog" aria-controls="files-dialog" aria-expanded="false">파일 탐색</button>
     <button id="helpbtn" title="도움말 (?)">?</button></div>
   <div class="console" id="console">
+    <div class="center">
+      <div class="scrwrap" id="conwrap"><textarea id="kbcap" autocomplete="off" spellcheck="false"
+        aria-label="기기 키보드 입력"></textarea><img id="scr" alt="기기 화면" draggable="false"><canvas
+        id="vcanvas" hidden aria-label="기기 화면(H.264)"></canvas><video id="vvideo" hidden muted
+        playsinline autoplay disablepictureinpicture aria-label="기기 화면(H.264)"></video></div>
+    </div>
+  </div>
+  <dialog id="files-dialog" class="files-dialog" aria-labelledby="files-title">
+    <div class="files-bar"><h2 id="files-title">파일 탐색</h2>
+      <button id="files-close" autofocus aria-label="파일 탐색 닫기">닫기 ✕</button></div>
     <div class="side">
       <div class="fpane" id="fp-android">
         <div class="fhead"><b>안드로이드</b>
@@ -928,18 +1055,10 @@ PAGE = r"""<!doctype html>
       </div>
       <div class="jobs" id="jobs" aria-live="polite"></div>
     </div>
-    <div class="center">
-      <div class="scrbar">
-        <button id="ckback">Back</button><button id="ckhome">Home</button><button id="ckenter">Enter</button>
-        <button id="ckclip" title="브라우저 클립보드를 기기로 붙여넣기 (화면 포커스 중 Ctrl/Cmd+V도 됨)">📋 기기로</button>
-        <span class="kbhint" id="kbhint">화면을 클릭하면 키보드가 기기로 갑니다 · Esc 해제</span>
-        <span class="fps" id="cfps"></span>
-      </div>
-      <div class="scrwrap" id="conwrap"><textarea id="kbcap" autocomplete="off" spellcheck="false"
-        aria-label="기기 키보드 입력"></textarea><img id="scr" alt="기기 화면" draggable="false"><canvas
-        id="vcanvas" hidden aria-label="기기 화면(H.264)"></canvas><video id="vvideo" hidden muted
-        playsinline autoplay disablepictureinpicture aria-label="기기 화면(H.264)"></video></div>
-    </div>
+  </dialog>
+  <div class="bar controls" id="controls" role="group" aria-label="기기 조작">
+    <button id="ckback">Back</button><button id="ckenter">Enter</button>
+    <button id="ckclip" title="브라우저 클립보드를 기기로 붙여넣기 (화면 포커스 중 Ctrl/Cmd+V도 됨)">📋 기기로</button>
   </div>
   <div class="bar statusbar" id="statusbar">
     <span id="status" role="status">starting …</span>
@@ -951,6 +1070,9 @@ PAGE = r"""<!doctype html>
     <select id="rsel" title="화면 전달: 자동 / WebCodecs / MSE / PNG">
       <option value="auto">자동</option><option value="wc">WC</option><option value="mse">MSE</option>
       <option value="png">PNG</option></select>
+    <select id="qsel" title="가상 화면 긴 변: 낮추면 더 부드럽게 표시됩니다. 연결된 화면 모두에 적용됩니다.">
+      <option value="960">빠르게 960</option><option value="1280" selected>균형 1280</option>
+      <option value="1440">선명하게 1440</option><option value="1920">최대 1920</option></select>
     <span class="badge" id="vmode" title="화면 전달 방식">PNG</span>
   </div>
   <div class="toast" id="cliptoast" hidden role="status">
@@ -966,9 +1088,11 @@ const lsGet = (k,d) => { try{ return JSON.parse(localStorage.getItem(k)) ?? d; }
 const lsSet = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} };
 const HELP =
   '<b>화면 클릭</b>  기기 탭 + 키보드가 기기로 (테두리 표시)\n' +
-  '<b>드래그</b>  스와이프\n' +
+  '<b>드래그</b>  실시간 스크롤 (PNG는 놓은 뒤 전달)\n' +
+  '<b>휠 / 트랙패드</b>  화면 위에서 위아래 스크롤 (영상 모드)\n' +
   '<b>키보드</b>  글자는 ADBKeyBoard(한글 OK), Backspace·Enter·Tab·방향키·Home/End·PgUp/PgDn·Delete\n' +
-  '<b>Esc</b>  키보드 해제 · <b>Back/Home/Enter</b> 버튼\n' +
+  '<b>Esc</b>  키보드 해제 · <b>Back/Enter</b> 버튼\n' +
+  '<b>파일 탐색</b>  파일 창 열기 · Esc / 닫기 버튼으로 닫기\n' +
   '<b>⇪ 올리기 / 드래그앤드롭</b>  브라우저 파일을 그 패널 폴더로\n' +
   '<b>⤓ / 더블클릭</b>  파일을 브라우저로 받기\n' +
   '<b>↓ 로컬로 / ↑ 안드로이드로</b>  기기 ⇄ VM 복사(덮어쓰지 않음)\n' +
@@ -979,6 +1103,7 @@ function closeHelp(){ $("helpovl").classList.remove("show"); }
 $("helpbtn").onclick = openHelp;
 $("helpovl").addEventListener("click", e=>{ if(e.target.id==="helpovl") closeHelp(); });
 document.addEventListener("keydown", e=>{
+  if($("files-dialog").open) return;   // native dialog owns focus and Escape
   const t = e.target;
   if(t.tagName==="INPUT" || t.tagName==="TEXTAREA") return;   // path boxes / kbcap
   if(e.key==="Escape"){ closeHelp(); return; }
@@ -1072,38 +1197,111 @@ function pollFrame(){
   }).catch(()=>{ if(pngWanted) setTimeout(pollFrame, 600); else frameLoop=false; });
 }
 async function scrPost(path, body){
-  body.src = renderer==="png" ? "png" : "video";   // input goes to the display being shown
-  try{ await fetch("/api/screen/"+path, {method:"POST",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); }catch(e){}
+  body.src ??= renderer==="png" ? "png" : "video";
+  try{ const r = await fetch("/api/screen/"+path, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(body),
+    signal:AbortSignal.timeout(5000), keepalive:path==="touch" && ["up","cancel"].includes(body.action)});
+    if(!r.ok) setStatus("입력 실패: " + r.status);
+    return r.ok;
+  }catch(e){ setStatus("입력 연결 실패"); return false; }
 }
-// pointer → tap/swipe on whichever element currently shows the screen; the
-// server maps element coords (letterbox-aware) through the media's own size
-let pd = null;
+// Live input: ordered requests, one in flight and one pending move/wheel.
+// A slow link coalesces movement instead of replaying stale pointer positions.
+let pd = null, touchQ = [], touchBusy = false, moveT = null, holdT = null;
+async function touchPump(){
+  if(touchBusy) return;
+  touchBusy = true;
+  try{ while(touchQ.length){
+    const e = touchQ.shift();
+    if(!await scrPost(e.path, e.body)){
+      touchQ = touchQ.filter(n=>n.body.gesture !== e.body.gesture);
+      if(pd && pd.gesture===e.body.gesture) cancelPointer();
+    }
+  }}finally{ touchBusy = false; }
+}
+function touchEnqueue(path, body){
+  const tail = touchQ[touchQ.length-1];
+  if(path==="touch" && body.action==="move" && tail?.path===path &&
+     tail.body.action==="move" && tail.body.gesture===body.gesture) tail.body=body;
+  else if(path==="scroll" && tail?.path===path){
+    body.dy = Math.max(-16, Math.min(16, body.dy+tail.body.dy)); tail.body=body;
+  }else touchQ.push({path,body});
+  touchPump();
+}
 function dims(el){
   if(el.tagName==="IMG") return [el.naturalWidth, el.naturalHeight];
   if(el.tagName==="CANVAS") return [el.width, el.height];
   return [el.videoWidth, el.videoHeight];
 }
+function point(el, e){
+  const r=el.getBoundingClientRect(), [iw,ih]=dims(el);
+  return {cx:e.clientX-r.left, cy:e.clientY-r.top, ew:r.width, eh:r.height, iw, ih};
+}
+function pointerSend(action){
+  if(pd?.live) touchEnqueue("touch", {...pd.pos, src:"video", gesture:pd.gesture, action});
+}
+function cancelPointer(){
+  clearTimeout(moveT); clearInterval(holdT); moveT=holdT=null;
+  pointerSend("cancel"); pd=null;
+}
 ["scr","vcanvas","vvideo"].forEach(id=>{
   const el = $(id);
-  el.addEventListener("pointerdown", e=>{ e.preventDefault(); pd={x:e.offsetX,y:e.offsetY,t:Date.now()};
+  el.addEventListener("pointerdown", e=>{
+    if(e.button!==0 || pd) return;
+    e.preventDefault();
+    const pos=point(el,e); if(!pos.iw || !pos.ih) return;
+    pd={pos, x:pos.cx, y:pos.cy, t:Date.now(), id:e.pointerId, el,
+        live:renderer!=="png", gesture:Date.now()+":"+Math.random().toString(36).slice(2)};
+    pointerSend("down");
+    if(pd.live) holdT=setInterval(()=>pointerSend("move"),500);
     try{ el.setPointerCapture(e.pointerId); }catch(_){}
-    $("kbcap").focus({preventScroll:true}); });   // clicking the screen routes the keyboard to the device
+    $("kbcap").focus({preventScroll:true}); });
+  el.addEventListener("pointermove", e=>{
+    if(!pd || pd.id!==e.pointerId || pd.el!==el) return;
+    pd.pos=point(el,e);
+    if(pd.live && !moveT) moveT=setTimeout(()=>{ moveT=null; pointerSend("move"); },16);
+  });
   el.addEventListener("pointerup", e=>{
-    if(!pd) return;
-    const ew=el.clientWidth, eh=el.clientHeight, [iw, ih] = dims(el);
-    const dx=e.offsetX-pd.x, dy=e.offsetY-pd.y;
-    if(Math.hypot(dx,dy) > 12){
-      scrPost("swipe",{cx1:pd.x,cy1:pd.y,cx2:e.offsetX,cy2:e.offsetY,ew,eh,iw,ih,ms:Math.max(120,Date.now()-pd.t)});
-    } else {
-      scrPost("tap",{cx:pd.x,cy:pd.y,ew,eh,iw,ih});
-    }
+    if(!pd || pd.id!==e.pointerId || pd.el!==el) return;
+    clearTimeout(moveT); clearInterval(holdT); moveT=holdT=null;
+    pd.pos=point(el,e);
+    if(pd.live) pointerSend("up");
+    else if(Math.hypot(pd.pos.cx-pd.x,pd.pos.cy-pd.y)>12)
+      scrPost("swipe",{...pd.pos, src:"png", cx1:pd.x,cy1:pd.y,cx2:pd.pos.cx,cy2:pd.pos.cy,ms:Math.max(120,Date.now()-pd.t)});
+    else scrPost("tap",{...pd.pos,src:"png",cx:pd.x,cy:pd.y});
     pd=null;
   });
+  for(const name of ["pointercancel","lostpointercapture"])
+    el.addEventListener(name,e=>{ if(pd?.id===e.pointerId) cancelPointer(); });
+  el.addEventListener("wheel", e=>{
+    if(e.ctrlKey || e.metaKey || renderer==="png" || pd) return;
+    e.preventDefault();
+    if(e.shiftKey || !e.deltaY || Math.abs(e.deltaX)>Math.abs(e.deltaY)) return;
+    const pos=point(el,e); if(!pos.iw || !pos.ih) return;
+    const scale=e.deltaMode===1 ? 16 : e.deltaMode===2 ? pos.eh : 1;
+    touchEnqueue("scroll",{...pos,src:"video",dx:0,
+      dy:Math.max(-16,Math.min(16,-e.deltaY*scale/120))});
+  },{passive:false});
 });
-$("ckback").onclick = ()=> scrPost("key",{name:"back"});
-$("ckhome").onclick = ()=> scrPost("key",{name:"home"});
-$("ckenter").onclick = ()=> scrPost("key",{name:"enter"});
+window.addEventListener("blur",cancelPointer);
+window.addEventListener("pagehide",cancelPointer);
+document.addEventListener("visibilitychange",()=>{ if(document.hidden) cancelPointer(); });
+$("ckback").onclick = ()=>{ kbFlush(); keyPost("key",{name:"back"}); };
+$("ckenter").onclick = ()=>{ kbFlush(); keyPost("key",{name:"enter"}); };
+
+const filesDialog = $("files-dialog");
+$("files-open").onclick = ()=>{
+  cancelPointer(); $("kbcap").blur(); closeHelp();
+  if(!filesDialog.open) filesDialog.showModal();
+  $("files-open").setAttribute("aria-expanded","true");
+};
+$("files-close").onclick = ()=>filesDialog.close();
+filesDialog.addEventListener("close",()=>$("files-open").setAttribute("aria-expanded",String(filesDialog.open)));
+filesDialog.addEventListener("click",e=>{
+  const r=filesDialog.getBoundingClientRect();
+  if(e.target===filesDialog && (e.clientX<r.left || e.clientX>r.right || e.clientY<r.top || e.clientY>r.bottom))
+    filesDialog.close();
+});
 
 // ---- file managers (top: android, bottom: local VM disk) — copy only ----
 const fp = {
@@ -1251,17 +1449,21 @@ $("push").onclick = ()=> transfer("push");
 // ---- keyboard → device: a hidden textarea captures keys (IME-aware) ----
 const kbcap = $("kbcap");
 let kbuf = "", kbT = null;
+let keyTail = Promise.resolve();
+function keyPost(path,body){
+  keyTail=keyTail.then(()=>scrPost(path,body)); return keyTail;
+}
 const KMAP = {Backspace:67, Enter:66, Tab:61, ArrowUp:19, ArrowDown:20, ArrowLeft:21,
               ArrowRight:22, Delete:112, Home:122, End:123, PageUp:92, PageDown:93};
 function kbFlush(){
   if(kbT){ clearTimeout(kbT); kbT=null; }
-  if(kbuf){ const t=kbuf; kbuf=""; scrPost("text", {text:t}); }
+  if(kbuf){ const t=kbuf; kbuf=""; keyPost("text", {text:t}); }
+  return keyTail;
 }
-function kbQueue(t){                 // batch keystrokes: one ADBKeyBoard broadcast per ~150ms
+function kbQueue(t){                 // bounded batching: continuous typing also flushes every 60ms
   if(!t) return;
   kbuf += t;
-  if(kbT) clearTimeout(kbT);
-  kbT = setTimeout(kbFlush, 150);
+  if(!kbT) kbT = setTimeout(kbFlush, 60);
 }
 kbcap.addEventListener("keydown", e=>{
   e.stopPropagation();
@@ -1269,7 +1471,7 @@ kbcap.addEventListener("keydown", e=>{
   if(e.key==="Escape"){ e.preventDefault(); kbcap.blur(); return; }
   if(e.ctrlKey || e.metaKey || e.altKey) return;
   const code = KMAP[e.key];
-  if(code!==undefined){ e.preventDefault(); kbFlush(); scrPost("key", {code}); }
+  if(code!==undefined){ e.preventDefault(); kbFlush(); keyPost("key", {code}); }
 });
 kbcap.addEventListener("input", e=>{
   if(e.isComposing) return;                              // wait for compositionend
@@ -1291,7 +1493,7 @@ kbcap.addEventListener("paste", e=>{
     return;
   }
   const t = cd.getData("text");
-  if(t){ e.preventDefault(); kbFlush(); clipToDevice(t, true); }
+  if(t){ e.preventDefault(); kbFlush(); keyTail=keyTail.then(()=>clipToDevice(t, true)); }
 });
 kbcap.addEventListener("focus", ()=> $("conwrap").classList.add("kbon"));
 kbcap.addEventListener("blur", ()=>{ kbFlush(); $("conwrap").classList.remove("kbon"); });
@@ -1316,7 +1518,7 @@ function badge(){
     ("H.264 " + renderer.toUpperCase() + (vInfo ? " " + vInfo : ""));
 }
 function vframe(){ vfps++; const now=Date.now(); if(now-vT>=1000){ $("cfps").textContent=vfps+" fps"; vfps=0; vT=now; badge(); } }
-function stopVideo(){ if(vAbort){ try{ vAbort.abort(); }catch(_){} vAbort=null; } }
+function stopVideo(){ cancelPointer(); if(vAbort){ try{ vAbort.abort(); }catch(_){} vAbort=null; } }
 function usePNG(){ stopVideo(); renderer="png"; showRenderer("png"); pngWanted=true; startFrames(); badge(); }
 function fallback(from, why){
   const next = ORDER.slice(ORDER.indexOf(from)+1).find(usable) || "png";
@@ -1335,14 +1537,14 @@ function startRenderer(r){
 }
 async function runStream(r){
   const box = $("conwrap").getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-  vAbort = new AbortController();
+  const controller = new AbortController(); vAbort=controller;
   const resp = await fetch("/api/video/stream?fmt=" + (r==="mse" ? "fmp4" : "annexb") +
-    "&w=" + Math.round(box.width) + "&h=" + Math.round(box.height) + "&dpr=" + dpr, {signal: vAbort.signal});
+    "&w=" + Math.round(box.width) + "&h=" + Math.round(box.height) + "&dpr=" + dpr, {signal: controller.signal});
   if(!resp.ok) throw new Error("HTTP " + resp.status);
   const sink = r==="wc" ? wcSink() : mseSink();
   const reader = resp.body.getReader();
   let buf = new Uint8Array(0);
-  for(;;){
+  try{ for(;;){
     const {value, done} = await reader.read();
     if(done) throw new Error("stream ended");
     const nb = new Uint8Array(buf.length + value.length); nb.set(buf); nb.set(value, buf.length); buf = nb;
@@ -1354,6 +1556,9 @@ async function runStream(r){
     }
     buf = buf.slice(off);
     vFails = 0;
+  }}finally{
+    sink.dispose?.(); reader.cancel().catch(()=>{});
+    if(vAbort===controller) vAbort=null;
   }
 }
 function onMeta(m){
@@ -1362,35 +1567,86 @@ function onMeta(m){
 }
 function wcSink(){
   const cv = $("vcanvas"), ctx = cv.getContext("2d");
-  let dec = null, cfg = null, waitKey = true;
-  return (t, p)=>{
+  let dec = null, cfg = null, waitKey = true, config = null, disposed = false;
+  let pending = null, paintReq = null, generation = 0, painted = false;
+  function clearPending(){
+    if(paintReq!==null){ cancelAnimationFrame(paintReq); paintReq=null; }
+    if(pending){ pending.close(); pending=null; }
+    painted=false;
+  }
+  function drawPending(){
+    const f=pending; pending=null;
+    if(!f) return;
+    try{
+      if(disposed) return;
+      if(cv.width!==f.displayWidth || cv.height!==f.displayHeight){
+        cv.width=f.displayWidth; cv.height=f.displayHeight;
+      }
+      ctx.drawImage(f, 0, 0);
+      painted=true;
+    }catch(e){ if(!disposed) fallback("wc", e.message); }
+    finally{ f.close(); }
+  }
+  function paint(){
+    paintReq=null;
+    drawPending();
+    if(painted){ cv.dataset.frames = (+cv.dataset.frames || 0) + 1; vframe(); painted=false; }
+  }
+  const sink = (t, p)=>{
+    if(disposed) return;
     if(t===1){
       const m = JSON.parse(new TextDecoder().decode(p)); onMeta(m);
+      const current=++generation; clearPending(); cfg=null;
       if(dec){ try{ dec.close(); }catch(_){} }
       dec = new VideoDecoder({
-        output: f=>{ if(cv.width!==f.displayWidth || cv.height!==f.displayHeight){
-                       cv.width=f.displayWidth; cv.height=f.displayHeight; }
-                     ctx.drawImage(f, 0, 0); f.close(); cv.dataset.frames = (+cv.dataset.frames || 0) + 1; vframe(); },
-        error: e=>{ fallback("wc", e.message); }});
-      dec.configure({codec: m.codec, optimizeForLatency: true});
+        output: f=>{
+          if(disposed || current!==generation){ f.close(); return; }
+          if(pending) pending.close();
+          pending=f;
+          if(paintReq===null){
+            // Keep the first frame immediate. Only a burst of further outputs
+            // waits for repaint; always deferring the first added a frame of lag.
+            drawPending();
+            if(painted) paintReq=requestAnimationFrame(paint);
+          }
+        },
+        error: e=>{ if(!disposed && current===generation) fallback("wc", e.message); }});
+      config={codec: m.codec, optimizeForLatency: true}; dec.configure(config);
       waitKey = true;
     } else if(t===2){ cfg = p.slice();
     } else if(t===3 && dec && dec.state==="configured"){
       const key = p[0]===1;
       const pts = Number(new DataView(p.buffer, p.byteOffset+1, 8).getBigUint64(0));
       let data = p.subarray(9);
-      if(!key && (waitKey || dec.decodeQueueSize > 8)){ waitKey = true; return; }   // resync on next key
+      if(dec.decodeQueueSize > 4){
+        clearPending();
+        dec.reset(); dec.configure(config); waitKey=true; requestVideoKey();
+      }
+      if(!key && waitKey) return;
       if(key){ waitKey = false;
         if(cfg){ const d = new Uint8Array(cfg.length + data.length); d.set(cfg); d.set(data, cfg.length); data = d; } }
       dec.decode(new EncodedVideoChunk({type: key ? "key" : "delta", timestamp: pts, data}));
     }
   };
+  sink.dispose=()=>{ disposed=true; ++generation; clearPending(); if(dec && dec.state!=="closed") dec.close(); };
+  return sink;
+}
+let lastVideoKey = 0;
+function requestVideoKey(){
+  const now=Date.now(); if(now-lastVideoKey<1000) return; lastVideoKey=now;
+  fetch("/api/video/keyframe",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).catch(()=>{});
 }
 function mseSink(){
   const v = $("vvideo");
-  let ms = null, sb = null, q = [], keyTimes = [];
+  let ms = null, sb = null, q = [], keyTimes = [], url = null, disposed = false, frameReq = null;
+  function presented(){
+    if(disposed) return;
+    v.dataset.frames=(+v.dataset.frames || 0)+1; vframe();
+    frameReq=v.requestVideoFrameCallback(presented);
+  }
+  if(v.requestVideoFrameCallback) frameReq=v.requestVideoFrameCallback(presented);
   function pump(){
-    if(!sb || sb.updating) return;
+    if(disposed || !sb || sb.updating) return;
     const b = v.buffered;                     // stay at the live edge
     if(b.length){
       const end = b.end(b.length-1);
@@ -1413,9 +1669,11 @@ function mseSink(){
     if(v.paused) v.play().catch(()=>{});
   }
   function reset(codec){
+    if(url) URL.revokeObjectURL(url);
     q = []; sb = null; keyTimes = [];
-    ms = new MediaSource(); v.src = URL.createObjectURL(ms);
+    ms = new MediaSource(); const current=ms; url=URL.createObjectURL(ms); v.src=url;
     ms.addEventListener("sourceopen", ()=>{
+      if(disposed || current!==ms) return;
       try{ sb = ms.addSourceBuffer('video/mp4; codecs="' + codec + '"'); }
       catch(e){ fallback("mse", e.message); return; }
       sb.mode = "sequence";                   // back-to-back: a static screen leaves no gaps
@@ -1423,12 +1681,22 @@ function mseSink(){
     }, {once: true});
   }
   v.addEventListener("timeupdate", pump);
-  return (t, p)=>{
+  const sink = (t, p)=>{
     if(t===1){ const m = JSON.parse(new TextDecoder().decode(p)); onMeta(m); reset(m.codec); }
     else if(t===4){ const m = JSON.parse(new TextDecoder().decode(p));
       if(Number.isFinite(m.key_time) && m.key_time >= 0) keyTimes.push(m.key_time); }
-    else if(t===2 || t===3){ q.push(p.slice()); pump(); if(t===3) vframe(); }
+    else if(t===2 || t===3){
+      if(q.length>=30) throw new Error("MSE decode backlog");
+      q.push(p.slice()); pump(); if(t===3 && !v.requestVideoFrameCallback) vframe();
+    }
   };
+  sink.dispose=()=>{
+    disposed=true; q=[]; v.removeEventListener("timeupdate",pump);
+    if(frameReq!==null) v.cancelVideoFrameCallback(frameReq);
+    if(sb) sb.removeEventListener("updateend",pump);
+    if(url) URL.revokeObjectURL(url);
+  };
+  return sink;
 }
 // flex: keep the virtual display matched to the screen area (debounced)
 let rzT = null, lastRz = "";
@@ -1445,6 +1713,13 @@ new ResizeObserver(()=>{
 }).observe($("conwrap"));
 $("rsel").value = lsGet("kakao.video", "auto");
 $("rsel").onchange = ()=>{ lsSet("kakao.video", $("rsel").value); vFails = 0; startRenderer(wanted()); };
+$("qsel").onchange = ()=>{
+  cancelPointer();
+  fetch("/api/video/quality",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({max_side:Number($("qsel").value)})}).then(r=>r.json()).then(j=>{
+      if(j.error) setStatus(j.error); else setStatus("가상 화면 품질: " + j.max_side);
+    }).catch(()=>setStatus("품질 변경 실패"));
+};
 $("dsel").onchange = ()=>{
   fetch("/api/video/mode", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({mode: $("dsel").value})}).then(r=>r.json()).then(j=>{
@@ -1454,12 +1729,15 @@ setInterval(()=>{                                  // surface server-side fallba
   if(renderer==="png") return;
   fetch("/api/video/info").then(r=>r.json()).then(j=>{
     if(j.note) setStatus(j.note);
+    if(j.max_side) $("qsel").value=String(j.max_side);
+    $("qsel").disabled=j.mode!=="virtual";
     if(j.mode && $("dsel").value!==j.mode) $("dsel").value = j.mode;
   }).catch(()=>{});
 }, 4000);
 
 // ---- startup: the console needs the screen API (local bind or --allow-screen) ----
-fetch("/api/screen/info").then(r=>r.json()).then(j=>{
+// Capability check must not start full-resolution PNG capture alongside H.264.
+fetch("/api/screen/info?peek=1").then(r=>r.json()).then(j=>{
   if(!j.enabled){
     $("conwrap").innerHTML = '<div class="disabled-note">콘솔 비활성 — 비로컬 바인드에서는 ' +
       '<b>--allow-screen</b> 으로 켜야 합니다(계정 전체 원격 조작이므로 SSH 터널/Tailscale 권장).</div>';

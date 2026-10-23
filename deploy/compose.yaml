@@ -1,4 +1,4 @@
-# 정적 검증 완료 후 별도 승인으로 전환할 구성. 라이브 redroid에 up 금지.
+# 기본 배포 구성. 기존 Android 재생성 시 같은 /data bind를 유지한다.
 # 구성 참고: rokrokss/kakaotalk-bridge @097a9b8 (MIT), NOTICE 참조.
 name: kakao
 services:
@@ -34,6 +34,7 @@ services:
       - androidboot.redroid_width=1600
       - androidboot.redroid_height=2560
       - androidboot.redroid_dpi=340
+      - androidboot.redroid_fps=${KAKAO_ANDROID_FPS:-60}
       - androidboot.redroid_gpu_mode=guest
       - androidboot.use_memfd=1
       - ro.product.manufacturer=samsung

@@ -45,5 +45,6 @@ task_source_files \
 exec limactl shell --workdir "$TASK_LIMA_DIR" "$TASK_LIMA_INSTANCE" \
   sudo env COMPOSE_DISABLE_ENV_FILE=1 \
   "KAKAO_ADB_SECURE=${KAKAO_ADB_SECURE:-0}" "KAKAO_WEB_BIND=${KAKAO_WEB_BIND:-127.0.0.1}" \
+  "KAKAO_ANDROID_FPS=${KAKAO_ANDROID_FPS:-60}" \
   "KAKAO_ANDROID_DATA=${KAKAO_ANDROID_DATA:-/opt/redroid/data}" docker compose --project-name kakao \
   -f deploy/compose.yaml -f deploy/compose.lima.yaml "$@"

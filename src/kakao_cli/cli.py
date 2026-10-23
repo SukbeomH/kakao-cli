@@ -154,7 +154,7 @@ def cmd_webui(args) -> int:
               allow_hosts=args.allow_host or (), scrcpy_server=args.scrcpy_server,
               use_scrcpy=not args.no_scrcpy, video_mode=args.video_mode,
               video_max_fps=args.video_max_fps, video_bit_rate=args.video_bit_rate,
-              video_max_size=args.video_max_size, vd_dpi=args.vd_dpi)
+              video_max_size=args.video_max_size, vd_dpi=args.vd_dpi, vd_max_size=args.vd_max_size)
     return 0
 
 
@@ -288,7 +288,7 @@ def build_parser():
                             help="console video: a scrcpy virtual display sized to the browser "
                                  "(flex, default) or a mirror of the device screen")
             sp.add_argument("--video-max-fps", type=int, default=60, metavar="N",
-                            help="H.264 frame-rate cap (default 60; redroid's own screen is 15 Hz)")
+                            help="H.264 frame-rate cap (default 60; Android refresh rate is separate)")
             sp.add_argument("--video-bit-rate", type=_size, default="4M", metavar="BPS",
                             help="H.264 bit rate (default 4M)")
             sp.add_argument("--video-max-size", type=int, default=1280, metavar="PX",
@@ -296,6 +296,8 @@ def build_parser():
             sp.add_argument("--vd-dpi", default="auto", metavar="auto|device|N",
                             help="virtual display dpi: auto = 160×devicePixelRatio (1 dp ≈ 1 CSS px), "
                                  "device = proportional to the device's 340 dpi, or a number")
+            sp.add_argument("--vd-max-size", type=int, choices=(960, 1280, 1440, 1920), default=1280,
+                            help="virtual display longest side / initial quality (default 1280)")
             sp.add_argument("--fs-root", default="~", metavar="PATH",
                             help="local file-manager root in the console (default: ~); "
                                  "the pane cannot leave it")

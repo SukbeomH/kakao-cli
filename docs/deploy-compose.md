@@ -345,6 +345,55 @@ compose와 동시에 기동하면 같은 데이터/포트를 쓸 수 있으므�
 
 ## 정적 검증과 출처
 
+### 콘솔 반응성과 24~60fps 설정
+
+현재 Compose는 `androidboot.redroid_fps=${KAKAO_ANDROID_FPS:-60}`을 기본/라이브 overlay 모두에 명시한다.
+기존 guest GPU 구성에서는 기본 디스플레이가 15Hz로 동작했다. 가상 디스플레이가 60Hz로 표시돼도
+실제 합성 주기가 기본 디스플레이에 묶일 수 있어 인코더의 `--video-max-fps`만 높여서는 해결되지 않았다.
+CPU 2개·메모리 4GiB·디스크 20GiB는 유지한다. FPS 인자를 적용하려면 **Android 컨테이너 재생성이 필요**하다.
+`/data`와 adb-state 볼륨은 기존 것을 그대로 사용한다.
+
+Mac/Lima에서 이 변경을 적용하는 순서:
+
+```bash
+scripts/lima-compose.sh build webui
+scripts/lima-compose.sh up -d --no-deps redroid
+scripts/lima-compose.sh run --rm boot
+scripts/lima-compose.sh up -d --no-deps webui
+```
+
+원격 라이브 구성에서는 호스트에서 다음을 실행한다. Android 재시작 중 잠시 콘솔 연결이 끊기므로
+작업을 끝낸 뒤 적용하고, 완료 후 브라우저도 새로고침한다.
+
+```bash
+git pull --ff-only
+export COMPOSE_DISABLE_ENV_FILE=1
+docker compose -f deploy/compose.yaml -f deploy/compose.live.yaml build webui
+docker compose -f deploy/compose.yaml -f deploy/compose.live.yaml up -d --no-deps redroid
+docker compose -f deploy/compose.yaml -f deploy/compose.live.yaml run --rm boot
+docker compose -f deploy/compose.yaml -f deploy/compose.live.yaml up -d --no-deps webui
+```
+
+상태바 품질은 `균형 1280`을 기본으로 사용한다. 큰 창에서 24fps 아래로 떨어지면 `빠르게 960`으로 낮춰
+같은 스크롤을 비교한다. 앱의 dp 크기는 유지하며 해상도만 조정한다. 연결된 모든 시청자가 같은 인코더와
+가상 디스플레이를 공유한다. CLI 초기값은 `--vd-max-size 960|1280|1440|1920`, 인코더 상한은
+`--video-max-fps 60`이다. 실제 기본 화면 주기는 `adb shell dumpsys display`의 Built-in Screen에서 확인한다.
+
+H.264 콘솔을 연 상태에서 다음 측정을 시작하고 화면을 계속 스크롤한다. 화면 데이터는 저장하지 않으며
+전달된 프레임 수만 집계한다. 이 수치는 브라우저가 실제로 그린 프레임 수와 구분해야 한다.
+
+```bash
+python3 scripts/benchmark-video.py http://127.0.0.1:8800 --seconds 15
+```
+
+60fps는 목표이며 소프트웨어 렌더러/인코더, 창 크기, 호스트 부하, 네트워크와 브라우저 디코더에 따라 달라진다.
+정지 화면에서 낮은 fps는 정상이다. 최소 24fps 여부도 활동 중 구간으로 판단한다. 60fps를 지속적으로 보장하려면
+실제 운영 호스트에서 재측정하고, 필요하면 CPU 또는 Linux 호스트 GPU 가속을 별도 검증해야 한다.
+Lima의 GPU 모드를 무작정 host로 바꾸면 지원 GPU 장치가 없어 부팅/렌더링에 실패할 수 있다.
+재시작 후 문제가 생기면 `KAKAO_ANDROID_FPS=15`로 같은 순서를 실행해 이전 주기로 돌아갈 수 있다.
+
+[로컬 성능 및 입력 검증 기록](verification/2026-10-23-console-performance.md).
+
 LAN HTTP의 자동 MSE 화면이 약 1분 후 멈추던 버퍼 정리 오류는
 [2026-10-21 수정·검증 기록](verification/2026-10-21-mse-buffer.md)을 참고한다.
 webui를 갱신한 뒤에는 브라우저도 새로고침해야 클라이언트 수정이 적용된다.

@@ -20,22 +20,13 @@ class Driver:
         return Screen(self.dev.dump())
 
     def _screen_where(self, pred, timeout=15.0, interval=0.6) -> Screen | None:
-        end = time.time() + timeout
-        while time.time() < end:
+        def ready():
             s = self.screen()
-            if pred(s):
-                return s
-            time.sleep(interval)
-        return None
+            return s if pred(s) else None
+        return _wait_value(ready, timeout, interval)
 
     def _find(self, finder, timeout=15.0, interval=0.6) -> Node | None:
-        end = time.time() + timeout
-        while time.time() < end:
-            n = finder(self.screen())
-            if n:
-                return n
-            time.sleep(interval)
-        return None
+        return _wait_value(lambda: finder(self.screen()), timeout, interval)
 
     def tap_node(self, node: Node):
         x, y = node.center
@@ -66,14 +57,10 @@ class Driver:
             self.dev.back(); _t.sleep(0.6)
         for restart in (False, True):
             if restart:
-                self.dev.shell("am force-stop com.kakao.talk"); _t.sleep(1.5)
+                self.dev.shell("am force-stop com.kakao.talk")
             self.dev.shell("am start -n com.kakao.talk/.activity.SplashActivity")
-            end = _t.time() + timeout
-            while _t.time() < end:
-                if _at_main():
-                    _t.sleep(0.8)
-                    return
-                _t.sleep(0.6)
+            if _poll(_at_main, timeout=timeout):
+                return  # caller waits for its own UI selector, not a fixed settle delay
         # give up silently; caller's _find will surface a precise error
 
     def open_chats_tab(self):
@@ -81,16 +68,25 @@ class Driver:
         for attempt in range(3):
             try:
                 self.ensure_main()
-                n = self._find(lambda s: _desc_prefix(s, "Chats tab"), timeout=8)
-                if not n:
+                s = self._screen_where(lambda s: _desc_prefix(s, "Chats tab"), timeout=8)
+                if not s:
                     last = "Chats tab not found"; continue
-                self.tap_node(n); time.sleep(1.0)
+                n = _desc_prefix(s, "Chats tab")
+                if _selected(n) and _selected(_all_chip(s)) and s.first(rid=RID["room_list"]):
+                    return
+                if not _selected(n):
+                    self.tap_node(n)
                 # ensure the 'All' filter chip (not 'Unread'/'ChatGPT'/...) is active
-                allchip = next((c for c in self.screen().all()
-                                if c.rid.endswith("tab_chip") and c.text == "All"), None)
-                if allchip:
-                    self.tap_node(allchip); time.sleep(0.6)
-                if self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=6):
+                s = self._screen_where(_all_chip, timeout=6)
+                if not s:
+                    last = "All filter not visible"; continue
+                allchip = _all_chip(s)
+                if _selected(allchip) and s.first(rid=RID["room_list"]):
+                    return
+                if not _selected(allchip):
+                    self.tap_node(allchip)
+                if self._screen_where(lambda s: _selected(_all_chip(s)) and
+                                      s.first(rid=RID["room_list"]) is not None, timeout=6):
                     return
                 last = "room list not visible"
             except Exception as e:  # noqa
@@ -118,13 +114,14 @@ class Driver:
         (without re-navigating) and return the most complete, stable snapshot."""
         self.open_chats_tab()
         best: list[dict] = []
-        for _ in range(reads):
+        for i in range(reads):
             s = self._screen_where(lambda s: s.first(rid=RID["room_list"]) is not None, timeout=6)
             if s:
                 rooms = self._read_room_list(s)
                 if len(rooms) > len(best):   # keep the most complete render seen
                     best = rooms
-            time.sleep(0.5)
+            if i + 1 < reads:
+                time.sleep(0.5)
         return best
 
     def track(self, interval: float = 5.0, window: int = 10):
@@ -185,11 +182,11 @@ class Driver:
                 self.ensure_main()
                 fn = self._find(lambda s: _desc_prefix(s, "Friends tab"), timeout=10)
                 if fn:
-                    self.tap_node(fn); time.sleep(1.0)
+                    self.tap_node(fn)
                 av = self._find(lambda s: _desc_contains(s, "Profile photo"), timeout=10)
                 if not av:
                     last = "profile avatar not found"; continue
-                self.tap_node(av); time.sleep(1.4)
+                self.tap_node(av)
                 mc = self._find(lambda s: _desc(s, "My Chatroom") or s.first(text="My Chatroom"), timeout=8)
                 if not mc:
                     last = "'My Chatroom' button not found"
@@ -207,13 +204,28 @@ class Driver:
         s = self._screen_where(lambda s: s.first(rid=RID["input"]) is not None, timeout=10)
         if not s:
             raise KakaoError("not in a chat room")
-        self.tap_node(s.first(rid=RID["input"])); time.sleep(0.4)
-        self.dev.type_text(text); time.sleep(0.6)
-        snd = self.screen().first(rid=RID["send"])
+        field = s.first(rid=RID["input"])
+        expected = field.text + text
+        previous = self._messages_on_screen(s).count(expected)
+        if field._el.get("focused") != "true":
+            self.tap_node(field)
+            if not self._find(lambda s: _focused_input(s), timeout=4):
+                raise KakaoError("message input did not gain focus")
+        self.dev.type_text(text)
+        def committed(s):
+            field = s.first(rid=RID["input"])
+            button = s.first(rid=RID["send"])
+            return button if (field and field.text == expected and button and
+                              button._el.get("enabled") != "false") else None
+        snd = self._find(committed, timeout=6)
         if not snd:
-            raise KakaoError("send button not found")
-        self.tap_node(snd); time.sleep(1.2)
-        if not _poll(lambda: text in self.dev.dump(), timeout=6):
+            raise KakaoError("text entry or send button not ready")
+        self.tap_node(snd)
+        try:
+            confirmed = self._screen_where(lambda s: self._messages_on_screen(s).count(expected) > previous, timeout=6)
+        except Exception:
+            confirmed = None  # after submission, a failed readback is also uncertain
+        if not confirmed:
             raise SendUncertain("sent but could not confirm via readback", text=text)
         return "verified"
 
@@ -439,28 +451,33 @@ class Driver:
         plus = self.screen().first(rid="com.kakao.talk:id/media_send_layout")
         if not plus:
             raise KakaoError("'+' button not found")
-        self.tap_node(plus); time.sleep(1.5)
+        self.tap_node(plus)
         # scroll the sheet to reveal 'File', then tap it
         fnode = None
         for _ in range(4):
-            fnode = next((n for n in self.screen().all() if n.desc == "File" or n.text == "File"), None)
+            fnode = self._find(lambda s: next((n for n in s.all()
+                               if n.desc == "File" or n.text == "File"), None), timeout=1.5)
             if fnode:
                 break
-            self.dev.shell("input swipe 800 2300 800 1400 400"); time.sleep(0.8)
+            self.dev.shell("input swipe 800 2300 800 1400 400")
         if not fnode:
             raise KakaoError("'File' option not found in + sheet")
-        self.tap_node(fnode); time.sleep(1.5)
+        self.tap_node(fnode)
         # 'Select from File' -> system picker
         sel = self._find(lambda s: s.first(text="Select from File"), timeout=6)
         if not sel:
             raise KakaoError("'Select from File' not found")
-        self.tap_node(sel); time.sleep(2.0)
+        self.tap_node(sel)
         # DocumentsUI: find our file by name (search for robustness)
         srch = self._find(lambda s: next((n for n in s.all()
                         if n.rid.endswith("option_menu_search")), None), timeout=8)
         if srch:
-            self.tap_node(srch); time.sleep(1.0)
-            self.dev.type_text(name); time.sleep(1.5)
+            self.tap_node(srch)
+            if not self._find(lambda s: next((n for n in s.all()
+                              if n.rid.endswith("search_src_text") and
+                              n._el.get("focused") == "true"), None), timeout=4):
+                raise KakaoError("file search input did not gain focus")
+            self.dev.type_text(name)
 
         # Pick the result row's title — NOT the search box, which now also holds
         # `name` (matching it taps the search field, selecting nothing).
@@ -524,10 +541,40 @@ def _nearest(nodes, y):
 
 
 def _poll(pred, timeout=6.0, interval=0.6) -> bool:
-    end = time.time() + timeout
-    while time.time() < end:
-        if pred():
-            return True
-        time.sleep(interval)
-    return False
+    return bool(_wait_value(pred, timeout, interval))
+
+
+def _wait_value(probe, timeout, interval):
+    """Probe immediately; back off short waits without adding a settle sleep.
+
+    A probe may itself be an expensive UI dump. Never issue overlapping dumps or
+    sleep past the deadline; keep the caller's interval as the backoff ceiling.
+    """
+    if interval <= 0:
+        raise ValueError("poll interval must be positive")
+    end = time.monotonic() + timeout
+    delay = min(0.1, interval)
+    while time.monotonic() < end:
+        value = probe()
+        if value:
+            return value
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(delay, remaining))
+        delay = min(interval, delay * 2)
+    return None
+
+
+def _selected(node):
+    return bool(node and (node._el.get("selected") == "true" or node._el.get("checked") == "true"))
+
+
+def _all_chip(screen):
+    return next((n for n in screen.all() if n.rid.endswith("tab_chip") and n.text == "All"), None)
+
+
+def _focused_input(screen):
+    node = screen.first(rid=RID["input"])
+    return node if node and node._el.get("focused") == "true" else None
 
