@@ -9,9 +9,10 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md NOTICE ./
 COPY src ./src
+COPY packages/android-console ./packages/android-console
 COPY scripts/compose-boot.sh ./scripts/compose-boot.sh
 RUN python -m venv /app/.venv \
- && /app/.venv/bin/pip install --no-cache-dir .
+ && /app/.venv/bin/pip install --no-cache-dir ./packages/android-console .
 ENV PATH="/app/.venv/bin:$PATH"
 RUN mkdir -p /files /root/.cache/kakao-cli
 

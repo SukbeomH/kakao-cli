@@ -11,7 +11,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 TOP_FILES = {"Dockerfile", ".dockerignore", "pyproject.toml", "uv.lock", "README.md", "NOTICE"}
-SOURCE_DIRS = {"src", "scripts", "deploy", "docs", "completions", "tests"}
+SOURCE_DIRS = {"src", "scripts", "deploy", "docs", "completions", "tests", "packages"}
 SOURCE_SUFFIXES = {".py", ".sh", ".yaml", ".json", ".md", ".txt", ".java", ".js", ".cjs", ".1", ".service"}
 
 
@@ -26,13 +26,18 @@ def source_files(root):
             continue
         if any(part.startswith(".env") for part in path.parts):
             raise ValueError(f"Secret filename cannot be released: {name}")
-        if name not in TOP_FILES and path.suffix not in SOURCE_SUFFIXES and path.parts[0] != "completions":
+        package_metadata = path.parts[0] == "packages" and (
+            path.name in {"NOTICE", "Dockerfile", ".dockerignore"} or path.suffix == ".toml")
+        if (name not in TOP_FILES and path.suffix not in SOURCE_SUFFIXES
+                and path.parts[0] != "completions" and not package_metadata):
             raise ValueError(f"Non-source file cannot be released: {name}")
         full = root / name
         if full.is_symlink() or not full.is_file():
             raise ValueError(f"Release inputs must be regular files: {name}")
         selected.append(name)
-    required = {"scripts/setup-macos.sh", "scripts/download-apks.py", "deploy/apks.json", "deploy/lima.yaml"}
+    required = {"scripts/setup-macos.sh", "scripts/download-apks.py", "deploy/apks.json", "deploy/lima.yaml",
+                "packages/android-console/pyproject.toml",
+                "packages/android-console/src/android_console/webui.py"}
     if not required.issubset(selected):
         raise ValueError("Release scripts must be tracked by Git before packaging")
     return sorted(selected)

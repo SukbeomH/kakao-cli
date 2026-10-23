@@ -1,12 +1,18 @@
 [project]
 name = "kakao-cli"
-version = "0.1.2"
+version = "0.1.3"
 description = "Read-only DB reception and UI automation for the official KakaoTalk Android app"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 keywords = ["kakaotalk", "adb", "android", "automation", "redroid", "waydroid", "cli"]
-dependencies = ["cryptography>=41"]  # DB AES-CBC; UI transport uses external adb
+dependencies = ["cryptography>=41", "android-console==0.1.0"]
+
+[tool.uv.workspace]
+members = ["packages/android-console"]
+
+[tool.uv.sources]
+android-console = { workspace = true }
 
 [project.scripts]
 kakao = "kakao_cli.cli:main"
@@ -22,7 +28,7 @@ build-backend = "hatchling.build"
 packages = ["src/kakao_cli"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/kakao_cli", "scripts", "docs", "completions", "README.md", "deploy", "NOTICE", "Dockerfile", ".dockerignore"]
+include = ["src/kakao_cli", "packages/android-console", "scripts", "docs", "completions", "README.md", "deploy", "NOTICE", "Dockerfile", ".dockerignore"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "NOTICE" = "kakao_cli/NOTICE"

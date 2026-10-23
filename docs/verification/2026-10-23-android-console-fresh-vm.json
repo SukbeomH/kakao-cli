@@ -1,0 +1,129 @@
+{
+  "date": "2026-10-23",
+  "vm": {
+    "name": "android-console",
+    "limaVersion": "2.2.1",
+    "cpus": 2,
+    "memoryBytes": 4294967296,
+    "diskBytes": 21474836480,
+    "android": "14",
+    "abi": "arm64-v8a",
+    "guestPageSize": 4096,
+    "url": "http://127.0.0.1:8801/",
+    "staticForward": true
+  },
+  "initialStreaming": {
+    "durationSeconds": 75.049,
+    "newPaints": 854,
+    "samplePaintsAt10SecondIntervals": [
+      223,
+      334,
+      445,
+      556,
+      667,
+      775,
+      887
+    ],
+    "finalPaints": 940,
+    "pageErrors": []
+  },
+  "finalBrowser": {
+    "errors": [],
+    "navigation": {
+      "home": "com.android.launcher3/.uioverrides.QuickstepLauncher",
+      "recent": "com.android.launcher3/.uioverrides.QuickstepLauncher",
+      "back": "com.android.launcher3/.uioverrides.QuickstepLauncher"
+    },
+    "initial": {
+      "title": "android-console 콘솔",
+      "mode": "mirror",
+      "dimensions": [
+        720,
+        1280
+      ],
+      "overflow": false
+    },
+    "stream": {
+      "durationSeconds": 75.173,
+      "newPaints": 846,
+      "samples": [
+        {
+          "seconds": 10,
+          "paints": 215
+        },
+        {
+          "seconds": 20,
+          "paints": 325
+        },
+        {
+          "seconds": 30,
+          "paints": 434
+        },
+        {
+          "seconds": 40,
+          "paints": 547
+        },
+        {
+          "seconds": 50,
+          "paints": 658
+        },
+        {
+          "seconds": 60,
+          "paints": 768
+        },
+        {
+          "seconds": 70,
+          "paints": 880
+        }
+      ],
+      "end": {
+        "count": 935,
+        "video": "H.264 WC 미러 720x1280",
+        "canvasVisible": true
+      }
+    }
+  },
+  "input": {
+    "unicode": "안드로이드 검증 123",
+    "editTextReadback": true,
+    "enterButton": true,
+    "ime": "com.android.adbkeyboard/.AdbIME"
+  },
+  "restartBrowser": {
+    "postRestartH264": true,
+    "recentOverview": true,
+    "png": {
+      "width": 720,
+      "height": 1280
+    },
+    "errors": []
+  },
+  "files": {
+    "bytes": 7552,
+    "sha256": "5b3e16394b467bf17917e81a8837aaba7f5485d2ccb9d9eaf0770685cfdf5068",
+    "localCopiesChecked": 2,
+    "androidCopiesChecked": 1,
+    "roundTripBytesEqual": true,
+    "survivedVmRestart": true
+  },
+  "installRerun": {
+    "apkInstallTimesUnchanged": true,
+    "firstInstallTime": "2026-10-23 06:17:58",
+    "lastUpdateTime": "2026-10-23 06:17:58"
+  },
+  "kakaoUnchanged": {
+    "webuiStartedAt": "2026-10-23T05:35:03.772011971Z",
+    "redroidStartedAt": "2026-10-23T02:06:27.69686147Z",
+    "restartCounts": [
+      0,
+      0
+    ]
+  },
+  "tests": {
+    "fullPassed": 221,
+    "fullSeconds": 74.52,
+    "finalSharedPassed": 18,
+    "finalSharedSeconds": 1.59
+  },
+  "runtimeDirectory": "/Users/sukbeom/Documents/android-console-runtime"
+}

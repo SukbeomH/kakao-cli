@@ -207,10 +207,12 @@ def test_release_archive_excludes_local_state_and_refuses_tracked_binaries(tmp_p
         'scripts/kakao-binder.service': '[Unit]\n',
         'deploy/apks.json': '{}\n',
         'deploy/lima.yaml': 'cpus: 2\n',
+        'packages/android-console/pyproject.toml': '[project]\nname="android-console"\n',
+        'packages/android-console/src/android_console/webui.py': '# shared console\n',
     }
     for name, content in sources.items():
         path = project / name
-        path.parent.mkdir(exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
     subprocess.run(['git', 'init', '-q', str(project)], check=True)
     subprocess.run(['git', 'add', '.'], cwd=project, check=True)

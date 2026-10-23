@@ -192,7 +192,7 @@ def test_hub_grace_stop_clears_lock(monkeypatch):
     hub.unsubscribe(s)
     time.sleep(0.2)
     assert br.calls[-1] == (False, {}) and not hub.active
-    assert any(c.startswith("rm -f " + consolelock.LOCK) for c in dev.cmds)
+    assert any("then rm -f " + consolelock.LOCK in c for c in dev.cmds)
 
 
 def test_hub_resize_and_modes():
@@ -233,11 +233,11 @@ def test_hub_heartbeat_writes_lock_only_for_live_vd():
     hub.subscribe("fmp4", (928, 744, 1))
     br.on_video(("session", 928, 744, 0))
     for _ in range(30):
-        if any(c.startswith("echo ") and consolelock.LOCK in c for c in dev.cmds):
+        if any('echo "$now ' in c and consolelock.LOCK in c for c in dev.cmds):
             break
         time.sleep(0.1)
-    w = [c for c in dev.cmds if c.startswith("echo ")]
-    assert w and w[0].endswith(" virtual > " + consolelock.LOCK)
+    w = [c for c in dev.cmds if 'echo "$now ' in c]
+    assert w and ' virtual" > ' + consolelock.LOCK in w[0]
 
 
 # ---------------------------------------------------------- console lock

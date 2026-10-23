@@ -6,13 +6,13 @@ Lima VM 디스크, Android `/data`, ADB 키, 로그인 상태와 개인 캐시�
 
 ## 사용자 설치
 
-Releases의 **`kakao-cli-0.1.2-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
+Releases의 **`kakao-cli-0.1.3-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
 GitHub가 자동 생성하는 Source code 압축파일 대신 첨부된 설치 패키지를 사용한다.
 
 ```bash
-shasum -a 256 -c SHA256SUMS.txt
-tar -xzf kakao-cli-0.1.2-macos-arm64.tar.gz
-cd kakao-cli-0.1.2-macos-arm64
+awk '$2 == "kakao-cli-0.1.3-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
+tar -xzf kakao-cli-0.1.3-macos-arm64.tar.gz
+cd kakao-cli-0.1.3-macos-arm64
 brew install lima
 bash scripts/setup-macos.sh
 ```
@@ -48,6 +48,45 @@ v0.1.2는 실시간 드래그·세로 휠, 입력 순서/영상 대기열 개선
 기존 서버는 webui만 갱신해 적용할 수 있다. **Android 60Hz 설정은 Android 컨테이너 재생성이 필요**하다.
 기존 `/data`와 ADB 상태 볼륨을 유지하며 [60Hz 적용 절차](deploy-compose.md#콘솔-반응성과-2460fps-설정)를 따른다.
 
+v0.1.3은 공통 `android-console 0.1.0` 패키지 분리와 신규 VM 설치 수정 사항을 포함한다.
+기존 Kakao CLI·TUI·웹 콘솔도 공통 패키지를 사용한다. 독립 콘솔은 기본 미러 모드,
+Home·최근 앱 버튼, 포트 8801을 사용하며 KakaoTalk를 자동 실행하지 않는다.
+미설치 입력기 확인·설치 후 입력기 등록 대기·기본 입력기 확인을 보강하고,
+독립 Lima 템플릿은 2.2 이상과 정적 포트 전달을 사용한다.
+새 독립 Android VM의 최초 설치·한글 입력·파일 전송·지속 재생·재부팅 검증은
+[독립 VM 검증 기록](verification/2026-10-23-android-console-fresh-vm.md)에 있다.
+이 검증은 위의 KakaoTalk 신규 설치·로그인 유지 검증 범위를 대체하지 않는다.
+
+## 독립 Android 콘솔 설치
+
+`android-console-0.1.0-macos-arm64.tar.gz`와 `SHA256SUMS.txt`를 내려받는다.
+전체 해시 파일에서 이 파일만 확인하려면 아래처럼 파일 이름을 선택한다.
+
+```sh
+awk '$2 == "android-console-0.1.0-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
+tar -xzf android-console-0.1.0-macos-arm64.tar.gz
+cd android-console-0.1.0-macos-arm64
+brew install lima
+./setup-macos.sh
+# http://127.0.0.1:8801/
+```
+
+Lima 2.2 이상이 필요하다. CPU 2개·메모리 4GiB·디스크 20GiB의 별도 `android-console` VM을
+사용한다. 종료는 `limactl stop android-console`, 재시작은 `limactl start --tty=false android-console`이다.
+이 번들은 공통 Python 소스·Lima/Compose·설치기만 포함하며 KakaoTalk APK/코드에 의존하지 않는다.
+
+## Python wheel 설치
+
+릴리즈에서 두 wheel을 내려받은 뒤 함께 지정한다. `android-console`만 쓰면 첫 wheel만 필요하다.
+
+```sh
+python3 -m pip install ./android_console-0.1.0-py3-none-any.whl ./kakao_cli-0.1.3-py3-none-any.whl
+android-console serve --serial DEVICE_SERIAL
+```
+
+외부 `adb`와 Python 3.11 이상이 필요하다. 공통 wheel은 Python 런타임 의존성이 없다.
+Kakao wheel은 공통 wheel과 기존 cryptography 의존성을 사용한다.
+
 ## 내려받는 배포물
 
 | 배포물 | 고정 기준 | 출처 |
@@ -79,6 +118,13 @@ limactl validate deploy/lima.yaml
 uv run python scripts/build-release.py dist
 ```
 
-`dist/`에는 설치 tarball과 `SHA256SUMS.txt`가 생성된다.
+`dist/`에는 Kakao 설치 tarball과 그 파일의 `SHA256SUMS.txt`가 생성된다.
+독립 runtime tarball 및 두 패키지의 wheel·sdist를 추가한 뒤 최종 해시 목록은 모든 첨부 파일에 대해 다시 생성한다.
 tarball 안의 `release-files.txt`로 Git이 없는 폴더에서도 Lima로 전달할 파일을 선택한다.
 소스 변경 후에는 패키지를 다시 만들어 해시를 갱신한다. 릴리즈 업로드는 빌드 스크립트가 수행하지 않는다.
+
+`android-console` 분리 이후에는 `packages/android-console`도 tarball·Lima 전송·Docker 빌드에
+포함된다. Docker는 이 로컬 소스를 명시적으로 설치한다. Python wheel을 배포할 때는
+`uv build --package android-console`과 `uv build --package kakao-cli`로 두 패키지를 함께
+작성해야 한다. 공통 패키지를 PyPI에 게시하기 전에는 Kakao wheel 하나만 배포하지 않는다.
+독립 런타임 내보내기와 설치 방법은 [android-console 가이드](android-console.md)를 참고한다.

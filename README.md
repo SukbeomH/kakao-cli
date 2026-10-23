@@ -33,7 +33,7 @@
   webui  (kakao-cli 웹 콘솔, :8800)        kakao-cli CLI/TUI (VM 셸 또는 컨테이너)
 ```
 
-- CLI는 Python 3.11+, `cryptography>=41`, `adb`가 필요하다.
+- CLI는 Python 3.11+, 공통 `android-console` 패키지, `cryptography>=41`, `adb`가 필요하다.
 - **수신은 DB**: 기기 안에서 `sqlite3 -readonly`로 조회하고 본문은 AES-CBC로 메모리에서만 복호화한다
   (adbd root 필요). 방·친구 이름은 새 암호화 프로필 DB를 기기 안에서 공식 SQLCipher로 읽는다.
 - **송신은 UI**: `uiautomator dump`로 읽고 resource-id/좌표로 조작한다. 한글 입력은 **ADBKeyBoard IME** 경유.
@@ -92,11 +92,11 @@ Apple Silicon Mac은 [deploy/lima.yaml](deploy/lima.yaml) + [ARM 오버레이](d
 
 ```bash
 # 개발 설치
-uv sync                      # 또는: pip install -e .
-kakao doctor --connect 10.0.0.30:5555
+uv sync                      # 또는: pip install -e ./packages/android-console -e .
+uv run kakao doctor --connect 10.0.0.30:5555
 
 # 소스로 바로 실행 (VM 셸, adb는 127.0.0.1:5555)
-PYTHONPATH=src python3 -m kakao_cli doctor --serial 127.0.0.1:5555
+uv run python -m kakao_cli doctor --serial 127.0.0.1:5555
 
 # compose 컨테이너 안에서 실행 (기기 이름은 redroid:5555)
 docker exec -it kakao-webui-1 python -m kakao_cli rooms --serial redroid:5555
@@ -194,7 +194,7 @@ bash scripts/setup-macos.sh
 
 Android 호스트로는 지원하지 않는다(WSL2 기본 커널에 binder 없음). **제어 호스트**로만 ②를 쓴다:
 Windows 기본 OpenSSH로 터널 → 브라우저 `http://localhost:8800`, CLI는 Python 3.11+ ·
-Android platform-tools(adb)로 `pip install -e .` 후 `kakao ... --connect 127.0.0.1:5555`,
+Android platform-tools(adb)로 `pip install -e ./packages/android-console -e .` 후 `kakao ... --connect 127.0.0.1:5555`,
 또는 Docker Desktop에서 이 저장소 이미지로 실행한다. Windows에서의 CLI 동작은 아직 검증하지 않았다.
 
 ## 명령
@@ -392,3 +392,17 @@ completions/    bash/zsh 자동완성
 - man page: `man -l docs/kakao.1`
 - 수집·분석 원장: [docs/initiatives/2026-10-16-artifact-collection.md](docs/initiatives/2026-10-16-artifact-collection.md)
 - 선행 사례 분석: [docs/initiatives/2026-10-16-prior-art.md](docs/initiatives/2026-10-16-prior-art.md)
+
+
+### 범용 Android 콘솔
+
+콘솔의 ADB·영상·입력·파일 기능은 독립 `android-console` 패키지로 공유합니다.
+기존 `kakao webui`와 CLI/TUI도 이 공통 구현을 사용합니다.
+
+```sh
+uv run android-console serve --serial DEVICE_SERIAL   # 기본 미러 모드, localhost:8801
+uv run android-console runtime export ./android-runtime
+```
+
+Home·최근 앱 버튼이 있는 범용 콘솔 및 독립 redroid/Lima 실행 방법은
+[android-console 가이드](docs/android-console.md)를 참고하세요.
