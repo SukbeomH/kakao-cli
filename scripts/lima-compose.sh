@@ -18,7 +18,7 @@ limactl shell --workdir / "$TASK_LIMA_INSTANCE" sudo mkdir -p "$TASK_LIMA_DIR"
 # 경로 이름만 조회한다. 비밀·DB 확장자는 추적돼 있어도 제외하고 파일 내용을 읽지 않는다.
 task_source_files() {
   if [[ -e "$TASK_REPO_ROOT/.git" ]]; then
-    git -C "$TASK_REPO_ROOT" ls-files -z -- Dockerfile .dockerignore pyproject.toml README.md NOTICE src scripts deploy \
+    git -C "$TASK_REPO_ROOT" ls-files -z -- Dockerfile .dockerignore pyproject.toml README.md NOTICE src packages scripts deploy \
       ':(exclude)**/.env*' ':(exclude).env*' ':(exclude)**/*.key' ':(exclude)**/*.pem' \
       ':(exclude)**/*.db*' ':(exclude)**/*.sqlite*'
   elif [[ -f "$TASK_REPO_ROOT/release-files.txt" ]]; then
@@ -26,7 +26,7 @@ task_source_files() {
       case "$path" in
         /*|../*|*/../*|*/..|./*|*/./*|*\\*|*.key|*.pem|*.db*|*.sqlite*|.env*|*/.env*)
           echo '잘못된 릴리즈 파일 목록입니다' >&2; return 1 ;;
-        Dockerfile|.dockerignore|pyproject.toml|README.md|NOTICE|src/*|scripts/*|deploy/*) ;;
+        Dockerfile|.dockerignore|pyproject.toml|README.md|NOTICE|src/*|packages/*|scripts/*|deploy/*) ;;
         *) continue ;;
       esac
       [[ -f "$TASK_REPO_ROOT/$path" && ! -L "$TASK_REPO_ROOT/$path" ]] \

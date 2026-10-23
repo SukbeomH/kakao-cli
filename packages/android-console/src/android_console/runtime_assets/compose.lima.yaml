@@ -1,0 +1,5 @@
+# Apple Silicon은 AArch32 vendor 바이너리 실행 불가. bridge(MIT) 참고, NOTICE 참조.
+services:
+  redroid:
+    platform: linux/arm64
+    image: redroid/redroid:14.0.0_64only-latest@sha256:0a611199ba2e0b5d60af39b3327a517f6407231f4352114ed3bd3cbfe2be69aa
