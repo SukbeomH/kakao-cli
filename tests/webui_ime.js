@@ -1,7 +1,5 @@
-// Console IME regression: keyboard capture (kbcap) must not send anything while
-// a Korean syllable is composing — no text and no Enter keycode — and must send
-// the committed text exactly once after compositionend (the old "last syllable
-// sent twice" bug). Network calls are spied, nothing reaches the device.
+// Console IME regression: update preedit without appending or Enter, then commit
+// once after compositionend. Every input route is spied; nothing reaches Android.
 //   NODE_PATH=.. CHROME=.. node webui_ime.js <base>
 const { chromium } = require('playwright-core');
 const BASE = process.argv[2];
@@ -15,7 +13,7 @@ function die(m){ console.error('FAIL: '+m); process.exit(1); }
     await p.waitForSelector('#kbcap');
     await p.evaluate(()=>{
       window.__calls=[]; const orig=window.fetch;
-      window.fetch=(u,o)=>{ if(typeof u==='string' && (u==='/api/screen/text'||u==='/api/screen/key')){
+      window.fetch=(u,o)=>{ if(typeof u==='string' && /^\/api\/screen\/(text|key|composition)$/.test(u)){
         window.__calls.push([u, JSON.parse(o.body)]); return Promise.resolve(new Response('{"ok":true}')); }
         return orig(u,o); };
     });
@@ -26,17 +24,18 @@ function die(m){ console.error('FAIL: '+m); process.exit(1); }
       k.dispatchEvent(new InputEvent('input',{data:'다',isComposing:true,bubbles:true}));
       k.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true}));
       await new Promise(res=>setTimeout(res,300));
-      const during = window.__calls.length;
+      const during = window.__calls.map(c=>[c[0],{...c[1]}]);
       k.dispatchEvent(new CompositionEvent('compositionend',{data:'가나다'}));
       k.dispatchEvent(new InputEvent('input',{data:'',isComposing:false,bubbles:true}));  // Firefox order
       await new Promise(res=>setTimeout(res,400));
       return {during, calls: window.__calls};
     });
-    if (r.during !== 0) die('sent while composing: '+JSON.stringify(r.calls));
-    const texts = r.calls.filter(c=>c[0]==='/api/screen/text').map(c=>c[1].text);
+    const phases=r.during.map(c=>c[1].phase);
+    if (JSON.stringify(phases)!==JSON.stringify(['start','update'])) die('expected native preedit: '+JSON.stringify(r.during));
+    const texts = r.calls.filter(c=>c[0]==='/api/screen/composition'&&c[1].phase==='commit').map(c=>c[1].text);
     const keys = r.calls.filter(c=>c[0]==='/api/screen/key');
-    if (texts.length!==1 || texts[0]!=='가나다' || keys.length) die('expected one "가나다", got '+JSON.stringify(r.calls));
-    console.log('IME OK: nothing while composing, one "가나다" after, no stray Enter');
+    if (texts.length!==1 || texts[0]!=='가나다' || keys.length || r.calls.some(c=>c[0]==='/api/screen/text')) die('expected one native commit, got '+JSON.stringify(r.calls));
+    console.log('IME OK: live preedit, one native commit, no duplicate text or stray Enter');
     console.log('PASS'); await b.close(); process.exit(0);
   } catch(e){ await b.close().catch(()=>{}); die(e.message); }
 })();

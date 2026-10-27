@@ -100,12 +100,18 @@ def enc_keycode(action: int, keycode: int, repeat: int = 0, meta: int = 0) -> by
 
 
 def enc_touch(action: int, x: int, y: int, w: int, h: int,
-              pressure: float = 1.0, pointer_id: int = -2) -> bytes:
+              pressure: float = 1.0, pointer_id: int = -2, *, action_button=0, buttons=0) -> bytes:
     p = 0 if action in (ACTION_UP, ACTION_CANCEL) else max(0, min(0xFFFF, int(pressure * 0xFFFF)))
     # pointer -2 = scrcpy's generic finger (touchscreen source); buttons are
-    # only for mouse events (-1), so they stay 0 here
+    # only for mouse events (-1), so touch callers keep the defaults at 0
     return struct.pack(">BBqiiHHHii", 2, action, pointer_id, int(x), int(y),
-                       int(w), int(h), p, 0, 0)
+                       int(w), int(h), p, action_button, buttons)
+
+
+def enc_secondary_click(x: int, y: int, w: int, h: int) -> bytes:
+    """Android mouse secondary-button click, without a synthetic touch/long press."""
+    return (enc_touch(ACTION_DOWN, x, y, w, h, pointer_id=-1, action_button=2, buttons=2)
+            + enc_touch(ACTION_UP, x, y, w, h, pointer_id=-1, action_button=2, buttons=0))
 
 
 def enc_scroll(x: int, y: int, w: int, h: int, dx: float, dy: float) -> bytes:
@@ -119,6 +125,11 @@ def enc_cancel_touch(x: int, y: int, w: int, h: int) -> bytes:
     # CANCEL ends the Android gesture without a click. scrcpy v5's PointersState
     # only removes fingers on UP, so also clear its bookkeeping afterwards.
     return enc_touch(ACTION_CANCEL, x, y, w, h) + enc_touch(ACTION_UP, x, y, w, h)
+
+
+def enc_get_clipboard() -> bytes:
+    # GET_CLIPBOARD, COPY_KEY_NONE: read the clipboard without copying/cutting a selection.
+    return b"\x08\x00"
 
 
 def enc_set_clipboard(seq: int, text: str, paste: bool) -> bytes:
@@ -265,6 +276,11 @@ class ScrcpySession:
         self.on_change = on_change or (lambda: None)
         self.lock = threading.Lock()          # one writer on the control socket
         self.state_lock = threading.Lock()
+        self._clip_changed = threading.Condition(self.state_lock)
+        self._clip_read_lock = threading.Lock()
+        self._clip_generation = 0
+        self._clip_uncertain = False
+        self._clip_poller = None
         self.proc = None
         self.port = None
         self.scid = None
@@ -289,6 +305,8 @@ class ScrcpySession:
     def start(self):
         self._sup = threading.Thread(target=self._supervise, daemon=True)
         self._sup.start()
+        self._clip_poller = threading.Thread(target=self._poll_clipboard, daemon=True)
+        self._clip_poller.start()
 
     def set_video(self, enabled: bool, **opts):
         """Restart the server with/without the video socket (keeps control)."""
@@ -307,6 +325,8 @@ class ScrcpySession:
             self._sup.join(timeout=8)       # close again so nothing is left behind
         self._close()
         self._cleanup_device()
+        if self._clip_poller:
+            self._clip_poller.join(timeout=2)
 
     def _supervise(self):
         backoff = 1.0
@@ -348,7 +368,7 @@ class ScrcpySession:
         d._run(["forward", "tcp:%d" % self.port, "localabstract:scrcpy_" + self.scid], check=True)
         video = self.video
         args = ["scid=" + self.scid, "log_level=warn", "tunnel_forward=true", "audio=false",
-                "control=true", "clipboard_autosync=true", "cleanup=false",
+                "control=true", "clipboard_autosync=false", "cleanup=false",
                 "power_off_on_close=false", "send_device_meta=false", "send_dummy_byte=true",
                 "video=" + ("true" if video else "false")]
         if video:
@@ -379,7 +399,10 @@ class ScrcpySession:
         else:
             self.ctrl = first
         self.ctrl.settimeout(None)
-        self.connected = True
+        with self._clip_changed:
+            self.connected = True
+            self._clip_uncertain = False
+            self._clip_changed.notify_all()
         threading.Thread(target=self._read_ctrl, args=(self.ctrl,), daemon=True).start()
         if video:
             self.vsock.settimeout(None)
@@ -387,6 +410,8 @@ class ScrcpySession:
 
     def _close(self):
         self.connected = False
+        with self._clip_changed:
+            self._clip_changed.notify_all()
         for s in (self.ctrl, self.vsock):
             if s:
                 try:
@@ -425,11 +450,17 @@ class ScrcpySession:
                     break
                 for ev in parser.feed(data):
                     if ev[0] == "clipboard":
-                        with self.state_lock:
+                        with self._clip_changed:
+                            if sock is not self.ctrl:
+                                return
+                            changed = ev[1] != self.clip_text
                             if ev[1] != self.clip_text:
                                 self.clip_text = ev[1]
                                 self.clip_seq += 1
-                        self.on_change()
+                            self._clip_generation += 1
+                            self._clip_changed.notify_all()
+                        if changed:
+                            self.on_change()
                     elif ev[0] == "ack":
                         e = self._ack.pop(ev[1], None)
                         if e:
@@ -438,6 +469,8 @@ class ScrcpySession:
             pass
         if sock is self.ctrl:
             self.connected = False
+            with self._clip_changed:
+                self._clip_changed.notify_all()
 
     def _read_video(self, sock):
         parser = VideoParser()
@@ -456,6 +489,60 @@ class ScrcpySession:
             self.connected = False
 
     # -- commands ------------------------------------------------------------
+    def get_clipboard(self, timeout: float = 3.0, *, _poll=False):
+        """Request clipboard text, including unchanged text, instead of returning cache.
+
+        scrcpy suppresses explicit GET replies when clipboard_autosync is enabled.
+        Disable that option and serialize reads (the protocol has no request ID).
+        Explicit reads retire an ambiguous connection after a prior timeout, so
+        a late reply cannot satisfy a later user request. Background reads may
+        time out on an unset Android clipboard; they must not restart the video.
+        """
+        deadline = time.monotonic() + timeout
+        if not self._clip_read_lock.acquire(timeout=max(0, timeout)):
+            raise TimeoutError("clipboard read busy")
+        try:
+            if not _poll:
+                with self.state_lock:
+                    uncertain, previous = self._clip_uncertain, self.ctrl
+                if uncertain:
+                    self._close()
+                    self._restart.set()
+                    with self._clip_changed:
+                        ready = self._clip_changed.wait_for(
+                            lambda: self.connected and self.ctrl is not previous or self._stop.is_set(),
+                            timeout=max(0, deadline - time.monotonic()))
+                        if not ready or self._stop.is_set():
+                            raise TimeoutError("clipboard reconnect timed out")
+            with self._clip_changed:
+                sock, generation = self.ctrl, self._clip_generation
+            self.send(enc_get_clipboard())
+            with self._clip_changed:
+                self._clip_changed.wait_for(
+                    lambda: self._clip_generation != generation or not self.connected or self.ctrl is not sock,
+                    timeout=max(0, deadline - time.monotonic()))
+                if not self.connected or self.ctrl is not sock:
+                    raise ScrcpyError("clipboard connection closed")
+                if self._clip_generation != generation:
+                    return self.clip_seq, self.clip_text
+                self._clip_uncertain = True
+            if not _poll:
+                self._close()
+                self._restart.set()
+            raise TimeoutError("clipboard read timed out")
+        finally:
+            self._clip_read_lock.release()
+
+    def _poll_clipboard(self):
+        # Keep the existing copy notification/opt-in auto-copy feature available.
+        # This uses the control channel only, without ADB or screen captures.
+        while not self._stop.wait(1.0):
+            if self.connected:
+                try:
+                    self.get_clipboard(timeout=1.0, _poll=True)
+                except (ScrcpyError, TimeoutError, OSError):
+                    pass
+
     def send(self, data: bytes):
         with self.lock:
             if not self.connected or not self.ctrl:
@@ -468,9 +555,14 @@ class ScrcpySession:
             self._set_seq += 1
         ev = threading.Event()
         self._ack[seq] = ev
-        self.send(enc_set_clipboard(seq, text, paste))
-        ok = ev.wait(timeout)
-        self._ack.pop(seq, None)
+        try:
+            self.send(enc_set_clipboard(seq, text, paste))
+            ok = ev.wait(timeout)
+        finally:
+            self._ack.pop(seq, None)
+        if ok:
+            with self.state_lock:
+                self.clip_text = text
         return ok
 
     def tap(self, x: int, y: int, w: int, h: int):

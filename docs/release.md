@@ -1,18 +1,23 @@
 # 공개 릴리즈: Apple Silicon 설치 패키지
 
 공개 GitHub 릴리즈는 설치기·소스·배포 설정·가이드·해시 목록을 제공한다.
-APK와 이미지는 설치 시 원격 배포처에서 내려받는다. 오프라인 설치 패키지가 아니다.
+카카오톡·ADBKeyBoard APK와 이미지는 설치 시 원격 배포처에서 내려받는다. 오프라인 설치 패키지가 아니다.
+자체 MIT 입력 보조 앱(Android Console Input)은 소스·빌드 스크립트·고정 해시와 함께 포함한다.
 Lima VM 디스크, Android `/data`, ADB 키, 로그인 상태와 개인 캐시는 포함하지 않는다.
 
 ## 사용자 설치
 
-Releases의 **`kakao-cli-0.1.3-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
+현재 배포는 `kakao-cli 0.1.4` / `android-console 0.1.1` preview다.
+양방향 클립보드, 우클릭, 키보드 대기열 개선, 한글 실시간 조합 전달을 포함한다.
+[v0.1.4 변경·갱신 방법](releases/v0.1.4.md)을 참고한다. Mac 런타임은 Lima 2.2 이상이 필요하다.
+
+Releases의 **`kakao-cli-0.1.4-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
 GitHub가 자동 생성하는 Source code 압축파일 대신 첨부된 설치 패키지를 사용한다.
 
 ```bash
-awk '$2 == "kakao-cli-0.1.3-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
-tar -xzf kakao-cli-0.1.3-macos-arm64.tar.gz
-cd kakao-cli-0.1.3-macos-arm64
+awk '$2 == "kakao-cli-0.1.4-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
+tar -xzf kakao-cli-0.1.4-macos-arm64.tar.gz
+cd kakao-cli-0.1.4-macos-arm64
 brew install lima
 bash scripts/setup-macos.sh
 ```
@@ -59,13 +64,13 @@ Home·최근 앱 버튼, 포트 8801을 사용하며 KakaoTalk를 자동 실행�
 
 ## 독립 Android 콘솔 설치
 
-`android-console-0.1.0-macos-arm64.tar.gz`와 `SHA256SUMS.txt`를 내려받는다.
+`android-console-0.1.1-macos-arm64.tar.gz`와 `SHA256SUMS.txt`를 내려받는다.
 전체 해시 파일에서 이 파일만 확인하려면 아래처럼 파일 이름을 선택한다.
 
 ```sh
-awk '$2 == "android-console-0.1.0-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
-tar -xzf android-console-0.1.0-macos-arm64.tar.gz
-cd android-console-0.1.0-macos-arm64
+awk '$2 == "android-console-0.1.1-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
+tar -xzf android-console-0.1.1-macos-arm64.tar.gz
+cd android-console-0.1.1-macos-arm64
 brew install lima
 ./setup-macos.sh
 # http://127.0.0.1:8801/
@@ -73,14 +78,14 @@ brew install lima
 
 Lima 2.2 이상이 필요하다. CPU 2개·메모리 4GiB·디스크 20GiB의 별도 `android-console` VM을
 사용한다. 종료는 `limactl stop android-console`, 재시작은 `limactl start --tty=false android-console`이다.
-이 번들은 공통 Python 소스·Lima/Compose·설치기만 포함하며 KakaoTalk APK/코드에 의존하지 않는다.
+이 번들은 공통 Python 소스·자체 IME 보조 앱·Lima/Compose·설치기를 포함하며 KakaoTalk APK/코드에 의존하지 않는다.
 
 ## Python wheel 설치
 
 릴리즈에서 두 wheel을 내려받은 뒤 함께 지정한다. `android-console`만 쓰면 첫 wheel만 필요하다.
 
 ```sh
-python3 -m pip install ./android_console-0.1.0-py3-none-any.whl ./kakao_cli-0.1.3-py3-none-any.whl
+python3 -m pip install ./android_console-0.1.1-py3-none-any.whl ./kakao_cli-0.1.4-py3-none-any.whl
 android-console serve --serial DEVICE_SERIAL
 ```
 
@@ -109,7 +114,7 @@ ADBKeyBoard는 [GPL-2.0](https://github.com/senzhk/ADBKeyBoard/blob/d7b27288bc8c
 
 ## 패키지 작성과 검증
 
-저장소의 추적된 소스 파일만 묶는다. `.git`, 미추적 파일, 사용자 디스크·키·APK·컨테이너 이미지는
+저장소의 추적된 소스와 해시를 검증한 자체 IME 보조 앱만 묶는다. `.git`, 미추적 파일, 사용자 디스크·키·제3자 APK·컨테이너 이미지는
 수집하지 않는다. 새 배포 스크립트는 Git에 추가한 뒤 빌드해야 한다.
 
 ```bash

@@ -1,4 +1,4 @@
-"""Serialized Android input and PNG capture, independent of any application."""
+"""Serialized Android input with independent read-only PNG capture."""
 from __future__ import annotations
 import queue
 import threading
@@ -13,6 +13,9 @@ class Worker(threading.Thread):
         self.poll_interval = poll_interval
         self.screen = screen
         self._closing = False
+        self._capture_stop = threading.Event()
+        self._capture_thread = None
+        self._composition = None
 
     def _startup(self):
         self._emit("status", "ready")
@@ -33,30 +36,33 @@ class Worker(threading.Thread):
         self.events.put((kind, data))
 
     def run(self):
-        self._startup()
-        while not self._closing:
-            # live screen view: capture frames fast and keep controls responsive;
-            # pause the periodic chat poll so there's no adb contention.
-            if self.screen is not None and self.screen.active():
-                self._capture()
+        if self.screen is not None:
+            self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self._capture_thread.start()
+        try:
+            self._startup()
+            while not self._closing:
                 try:
-                    cmd = self.cmds.get(timeout=0.25)
+                    cmd = self.cmds.get(timeout=self.poll_interval)
                 except queue.Empty:
-                    cmd = None
-                if cmd is not None:
-                    try:
-                        self._handle(cmd)
-                    except Exception as e:
-                        self._emit("status", f"err: {e}")
-                continue
-            try:
-                cmd = self.cmds.get(timeout=self.poll_interval)
-            except queue.Empty:
-                cmd = ("poll",)
-            try:
-                self._handle(cmd)
-            except Exception as e:  # keep the UI alive on transient adb errors
-                self._emit("status", f"err: {e}")
+                    # A live screen replaces periodic chat polling, as before.
+                    if self.screen is not None and self.screen.active():
+                        continue
+                    cmd = ("poll",)
+                try:
+                    self._handle(cmd)
+                except Exception as e:
+                    self._emit("status", f"err: {e}")
+        finally:
+            self._capture_stop.set()
+            if self._capture_thread:
+                self._capture_thread.join(timeout=1)
+
+    def _capture_loop(self):
+        while not self._capture_stop.is_set():
+            if self.screen.active():
+                self._capture()
+            self._capture_stop.wait(0.25)
 
     def _handle(self, cmd):
         op = cmd[0]
@@ -89,6 +95,12 @@ class Worker(threading.Thread):
                     self.dev.keyevent(code)
         elif op == "screentext":
             self.dev.type_text(cmd[1])
+        elif op == "composition":
+            if self._composition is None:
+                from .ime import CompositionInput
+                self._composition = CompositionInput(self.dev)
+            self._composition.send(cmd[1])
+
     def _capture(self):
         try:
             self.screen.set_frame(self.dev.screencap_bytes())

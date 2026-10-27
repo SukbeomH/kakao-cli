@@ -18,10 +18,14 @@ CPU 2개·메모리 4GiB·디스크 20GiB의 `android-console` Lima VM을 사용
 호스트 홈 마운트와 SSH agent 전달은 꺼져 있습니다.
 
 Ubuntu 및 redroid 이미지는 고정 digest로, 선택 IME(ADBKeyBoard)는 고정 SHA-256과
-서명 인증서로 검증합니다. APK/이미지/VM 디스크는 번들에 포함하지 않고 설치 시 받습니다.
+서명 인증서로 검증합니다. 제3자 APK/이미지/VM 디스크는 번들에 포함하지 않고 설치 시 받습니다.
 ADBKeyBoard는 GPL-2.0이며 출처·버전·해시는 keyboard.json을 참고하세요.
 설치를 원하지 않으면 `./setup-macos.sh --skip-keyboard`를 사용하세요.
 그 경우 기본 키보드를 사용하며 브라우저 Unicode 글자 입력에는 별도 IME 설정이 필요합니다.
+
+자체 MIT 입력 보조 앱(Android Console Input)은 소스·빌드 스크립트·해시와 함께 Python
+패키지에 포함됩니다. ADBKeyBoard가 선택된 기기의 첫 한글 조합 때 설치·선택하고,
+조합 중 글자도 Android 입력 칸에 바로 반영합니다. CLI/TUI의 기존 Unicode 입력도 지원합니다.
 
 기본 콘솔은 인증 없이 loopback만 바인딩합니다. 원격 접근은 SSH 터널을 사용하세요.
 8801은 `static: true`로 고정 전달해 VM 재부팅 시 동적 포트 감지에 의존하지 않습니다.

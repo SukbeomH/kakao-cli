@@ -196,10 +196,14 @@ def test_unicode_input_is_shell_quoted():
 
 
 def test_runtime_export_is_self_contained_and_does_not_overwrite(tmp_path):
+    import tomllib
+    from android_console import __version__
     destination = export_runtime(tmp_path / "runtime")
     assert (destination / "python-package/src/android_console/webui.py").is_file()
+    assert tomllib.loads((destination / "python-package/pyproject.toml").read_text())["project"]["version"] == __version__
     assert not list(destination.rglob("*.pyc"))
-    assert not list(destination.rglob("*.apk"))
+    # Only our MIT preedit helper is bundled; no Kakao/third-party APKs or VM data.
+    assert [p.name for p in destination.rglob("*.apk")] == ["android-console-ime.apk"]
     assert not list(destination.rglob("kakao_cli"))
     assert "cpus: 2" in (destination / "lima.yaml").read_text()
     assert "memory: 4GiB" in (destination / "lima.yaml").read_text()

@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.androidconsole.ime" android:versionCode="1" android:versionName="1.0">
+  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
+  <application android:label="Android Console Input" android:allowBackup="false" android:hasCode="true">
+    <service android:name=".ConsoleIME" android:label="Android Console Input" android:permission="android.permission.BIND_INPUT_METHOD" android:exported="true">
+      <intent-filter><action android:name="android.view.InputMethod" /></intent-filter>
+      <meta-data android:name="android.view.im" android:resource="@xml/input_method" />
+    </service>
+  </application>
+</manifest>

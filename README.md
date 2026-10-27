@@ -186,7 +186,8 @@ bash scripts/setup-macos.sh
 
 설치기는 Ubuntu·Android 이미지를 고정 digest로 내려받고, 카카오톡 26.8.3과 ADBKeyBoard는
 설치 시 해시·서명을 검증해 설치한다. 이미 설치된 앱은 재설치하지 않는다.
-**인터넷 연결이 필요하며 APK·VM 디스크·ADB 키는 릴리즈에 포함하지 않는다.**
+**인터넷 연결이 필요하며 카카오톡·ADBKeyBoard APK·VM 디스크·ADB 키는 릴리즈에 포함하지 않는다.**
+한글 실시간 조합용 자체 MIT 입력 보조 앱은 소스·해시와 함께 포함한다.
 새 설치기 전체 흐름은 모의 테스트로 확인했고, 실제 화면 확인은 아래 문서의 수동 절차로 진행했다.
 [상세 설치·문제 해결](docs/deploy-compose.md#apple-silicon-mac) · [릴리즈 구성](docs/release.md).
 

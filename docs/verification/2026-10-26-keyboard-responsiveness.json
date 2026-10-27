@@ -1,0 +1,142 @@
+{
+  "date": "2026-10-26",
+  "device": "standalone android-console Lima VM: 2 CPU / 4 GiB / 20 GiB",
+  "real_device_method": "Chrome 475x988, actual HTTP/ADB, Android Settings search field, input-to-HTTP-response per character, single run per scenario; exact Android UI XML readback",
+  "synthetic_method": "actual browser keyboard handler source in Node vm; mock request ACK 120 ms; exact text and Enter ordering checked",
+  "real_before": [
+    {
+      "name": "steady-hangul",
+      "renderer": "wc",
+      "characters": 10,
+      "intervalMs": 150,
+      "firstDispatchMs": 83,
+      "requests": 11,
+      "textAckMedianMs": 88,
+      "textAckP95Ms": 111,
+      "typingEndMs": 1548,
+      "enterAckMs": 1554,
+      "drainMs": 6,
+      "exactReadback": true
+    },
+    {
+      "name": "burst-latin",
+      "renderer": "wc",
+      "characters": 40,
+      "intervalMs": 20,
+      "firstDispatchMs": 66,
+      "requests": 15,
+      "textAckMedianMs": 62,
+      "textAckP95Ms": 98,
+      "typingEndMs": 886,
+      "enterAckMs": 919,
+      "drainMs": 33,
+      "exactReadback": true
+    },
+    {
+      "name": "png-hangul",
+      "renderer": "png",
+      "characters": 8,
+      "intervalMs": 150,
+      "firstDispatchMs": 81,
+      "requests": 9,
+      "textAckMedianMs": 86,
+      "textAckP95Ms": 102,
+      "typingEndMs": 1245,
+      "enterAckMs": 1269,
+      "drainMs": 24,
+      "exactReadback": true
+    }
+  ],
+  "real_after": [
+    {
+      "name": "steady-hangul",
+      "renderer": "wc",
+      "characters": 10,
+      "intervalMs": 150,
+      "firstDispatchMs": 20,
+      "requests": 11,
+      "textAckMedianMs": 28,
+      "textAckP95Ms": 43,
+      "typingEndMs": 1550,
+      "enterAckMs": 1556,
+      "drainMs": 6,
+      "exactReadback": true
+    },
+    {
+      "name": "burst-latin",
+      "renderer": "wc",
+      "characters": 40,
+      "intervalMs": 20,
+      "firstDispatchMs": 3,
+      "requests": 34,
+      "textAckMedianMs": 44,
+      "textAckP95Ms": 67,
+      "typingEndMs": 883,
+      "enterAckMs": 907,
+      "drainMs": 24,
+      "exactReadback": true
+    },
+    {
+      "name": "png-hangul",
+      "renderer": "png",
+      "characters": 8,
+      "intervalMs": 150,
+      "firstDispatchMs": 12,
+      "requests": 9,
+      "textAckMedianMs": 26,
+      "textAckP95Ms": 41,
+      "typingEndMs": 1237,
+      "enterAckMs": 1242,
+      "drainMs": 5,
+      "exactReadback": true
+    }
+  ],
+  "synthetic_before": [
+    {
+      "name": "steady",
+      "characters": 10,
+      "intervalMs": 150,
+      "rttMs": 120,
+      "firstDispatchMs": 61,
+      "requests": 11,
+      "typingEndMs": 1521,
+      "enterAckMs": 1675,
+      "drainMs": 154
+    },
+    {
+      "name": "burst",
+      "characters": 40,
+      "intervalMs": 20,
+      "rttMs": 120,
+      "firstDispatchMs": 63,
+      "requests": 15,
+      "typingEndMs": 849,
+      "enterAckMs": 1882,
+      "drainMs": 1033
+    }
+  ],
+  "synthetic_after": [
+    {
+      "name": "steady",
+      "characters": 10,
+      "intervalMs": 150,
+      "rttMs": 120,
+      "firstDispatchMs": 3,
+      "requests": 11,
+      "typingEndMs": 1518,
+      "enterAckMs": 1640,
+      "drainMs": 122
+    },
+    {
+      "name": "burst",
+      "characters": 40,
+      "intervalMs": 20,
+      "rttMs": 120,
+      "firstDispatchMs": 1,
+      "requests": 9,
+      "typingEndMs": 867,
+      "enterAckMs": 1091,
+      "drainMs": 224
+    }
+  ]
+}
