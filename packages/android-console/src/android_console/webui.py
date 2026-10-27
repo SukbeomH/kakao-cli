@@ -6,7 +6,7 @@ The web UI is console-only: the live device screen in the center (click/drag
 Application-specific automation belongs to the embedding application.
 
 A single background Worker owns the device and serializes UI-touching device
-access (PNG capture fallback, adb input, ADBKeyBoard text); file listings and
+access (adb input, ADBKeyBoard text); read-only PNG captures, file listings and
 transfers call adb directly from handler threads (adb's server serializes
 transports). No third-party deps, no CDN — the page is inlined.
 """
@@ -33,6 +33,7 @@ from .scrcpy import CLIP_MAX, ScrcpySession, ensure_server, ScrcpyError
 from .scrcpy import VERSION as SCRCPY_VERSION
 from .scrcpy import avc_codec_string
 from .scrcpy import enc_touch, enc_scroll, enc_cancel_touch, ACTION_DOWN, ACTION_MOVE, ACTION_UP, ACTION_CANCEL
+from .scrcpy import enc_secondary_click
 from .video import VideoHub
 from .profile import ConsoleProfile, DEFAULT_PROFILE
 from . import fmp4
@@ -269,6 +270,7 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -415,6 +417,20 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 self._fs_upload()
             elif self.path == "/api/clip":
                 self._clip_post()
+            elif self.path == "/api/clip/read":
+                if not self._guard():
+                    return
+                self._read_json()
+                bridge = state.bridge
+                if not bridge or not bridge.connected:
+                    return self._json(503, {"error": "device clipboard unavailable (scrcpy not connected)"})
+                try:
+                    seq, text = bridge.get_clipboard()
+                except TimeoutError:
+                    return self._json(504, {"error": "clipboard read timed out (clipboard may be unset); retry after reconnect"})
+                except (ScrcpyError, OSError) as e:
+                    return self._json(503, {"error": str(e)})
+                self._json(200, {"seq": seq, "text": text, "available": True})
             elif self.path in ("/api/video/resize", "/api/video/mode", "/api/video/quality", "/api/video/keyframe"):
                 self._video_post()
             else:
@@ -703,7 +719,7 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
             iw, ih = _num(body.get("iw")), _num(body.get("ih"))
             if not (iw and ih):
                 iw, ih = (vid or (w, h))
-            if op in ("tap", "swipe", "touch", "scroll") and (not iw or not ih):
+            if op in ("tap", "swipe", "touch", "scroll", "rightclick") and (not iw or not ih):
                 return self._json(409, {"error": "no frame yet"})
             def to_target(cx, cy):
                 px, py = view_to_device(_num(cx), _num(cy), _num(body.get("ew")),
@@ -711,12 +727,14 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 nx, ny = px / max(1, iw - 1), py / max(1, ih - 1)
                 tw, th = vid or (w, h)
                 return (int(round(nx * (tw - 1))), int(round(ny * (th - 1))))
-            if op in ("touch", "scroll"):
+            if op in ("touch", "scroll", "rightclick"):
                 if not vid:
                     return self._json(409, {"error": "live video required"})
                 x, y = to_target(body.get("cx"), body.get("cy"))
                 try:
-                    if op == "scroll":
+                    if op == "rightclick":
+                        bridge.send(enc_secondary_click(x, y, *vid))
+                    elif op == "scroll":
                         dy = _num(body.get("dy"))
                         if dy:
                             bridge.send(enc_scroll(x, y, *vid, 0, dy))
@@ -768,6 +786,17 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 except Exception as e:
                     return self._json(503, {"error": str(e)})
                 self._json(200, {"ok": True, "via": "adb"})
+            elif op == "composition":
+                from .ime import validate
+                try:
+                    composition = validate(body)
+                except ValueError as e:
+                    return self._json(400, {"error": str(e)})
+                try:
+                    worker.put_wait("composition", composition, timeout=15 if composition["phase"] == "start" else 5)
+                except Exception as e:
+                    return self._json(503, {"error": str(e)})
+                self._json(200, {"ok": True})
             elif op == "text":
                 text = body.get("text") or ""
                 if not text:
@@ -986,6 +1015,15 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     box-shadow:0 8px 36px #0008}
   .files-dialog[open]{display:flex;flex-direction:column}
   .files-dialog::backdrop{background:rgba(0,0,0,.65)}
+  .clipboard-dialog{width:min(560px,calc(100vw - 24px));max-height:calc(100dvh - 24px);
+    padding:0;color:var(--fg);background:var(--bg);border:1px solid var(--accent);border-radius:6px}
+  .clipboard-dialog::backdrop{background:rgba(0,0,0,.65)}
+  .clipboard-body{display:flex;flex-direction:column;gap:10px;padding:12px}
+  .clipboard-body p{margin:0;white-space:normal;font-size:13px}
+  .clipboard-body textarea{width:100%;min-height:140px;max-height:45dvh;resize:vertical;
+    font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);padding:8px}
+  .clipboard-actions{display:flex;justify-content:flex-end}
+  .clipboard-actions button{min-height:40px;padding:6px 12px;border:1px solid var(--line);color:var(--accent)}
   .files-bar{display:flex;align-items:center;gap:12px;padding:6px 10px;background:var(--bar);flex:0 0 auto}
   .files-bar h2{font:inherit;color:var(--accent);margin:0;flex:1}
   .files-bar button{min-height:36px;padding:4px 8px;color:var(--accent)}
@@ -1074,8 +1112,18 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   </dialog>
   <div class="bar controls" id="controls" role="group" aria-label="기기 조작">
     <button id="ckback">Back</button>@@NAVIGATION@@<button id="ckenter">Enter</button>
-    <button id="ckclip" title="브라우저 클립보드를 기기로 붙여넣기 (화면 포커스 중 Ctrl/Cmd+V도 됨)">📋 기기로</button>
+    <button id="ckclipget" title="기기(VM)의 클립보드를 가져와 로컬로 복사">📋 가져오기</button>
+    <button id="ckclip" title="로컬 클립보드를 기기(VM)의 클립보드에 저장 (입력 칸에는 붙여넣지 않음)">📋 넣기</button>
   </div>
+  <dialog id="clipboard-dialog" class="clipboard-dialog" aria-labelledby="clipboard-title">
+    <div class="files-bar"><h2 id="clipboard-title">클립보드</h2>
+      <button id="clipboard-close" aria-label="클립보드 닫기">닫기 ✕</button></div>
+    <div class="clipboard-body">
+      <p id="clipboard-hint" role="status"></p>
+      <textarea id="clipboard-text" aria-label="클립보드 내용" autocomplete="off" spellcheck="false"></textarea>
+      <div class="clipboard-actions"><button id="clipboard-apply">로컬로 복사</button></div>
+    </div>
+  </dialog>
   <div class="bar statusbar" id="statusbar">
     <span id="status" role="status">starting …</span>
     <label id="clipauto-l" hidden title="기기에서 복사하면 브라우저 클립보드에 자동으로 (https/localhost에서만)">
@@ -1105,13 +1153,18 @@ const lsSet = (k,v) => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch
 const HELP =
   '<b>화면 클릭</b>  기기 탭 + 키보드가 기기로 (테두리 표시)\n' +
   '<b>드래그</b>  실시간 스크롤 (PNG는 놓은 뒤 전달)\n' +
+  '<b>우클릭</b>  화면 위에서 Android 마우스 보조 버튼 전달 (영상 모드)\n' +
   '<b>휠 / 트랙패드</b>  화면 위에서 위아래 스크롤 (영상 모드)\n' +
-  '<b>키보드</b>  글자는 ADBKeyBoard(한글 OK), Backspace·Enter·Tab·방향키·Home/End·PgUp/PgDn·Delete\n' +
+  '<b>키보드</b>  한글 조합 실시간 전달, Backspace·Enter·Tab·방향키·Home/End·PgUp/PgDn·Delete\n' +
+  '<b>조합 중 Enter</b>  글자 확정만 (기기로 Enter를 보내지 않음)\n' +
   '<b>Esc</b>  키보드 해제 · <b>Back/Enter</b> 버튼\n' +
   '<b>파일 탐색</b>  파일 창 열기 · Esc / 닫기 버튼으로 닫기\n' +
   '<b>⇪ 올리기 / 드래그앤드롭</b>  브라우저 파일을 그 패널 폴더로\n' +
   '<b>⤓ / 더블클릭</b>  파일을 브라우저로 받기\n' +
   '<b>↓ 로컬로 / ↑ 안드로이드로</b>  기기 ⇄ VM 복사(덮어쓰지 않음)\n' +
+  '<b>📋 가져오기 / 넣기</b>  기기 클립보드 → 로컬 / 로컬 → 기기 클립보드 (텍스트)\n' +
+  '<b>HTTP / 클립보드 권한 거부</b>  클립보드 창에서 직접 복사·붙여넣기\n' +
+  '<b>Ctrl/Cmd+V</b>  기기 화면에 포커스한 상태에서는 입력 칸에 바로 붙여넣기\n' +
   '<b>?</b>  이 도움말@@HELP_SUFFIX@@';
 $("helptext").innerHTML = HELP;
 function openHelp(){ $("helpovl").classList.add("show"); }
@@ -1119,7 +1172,7 @@ function closeHelp(){ $("helpovl").classList.remove("show"); }
 $("helpbtn").onclick = openHelp;
 $("helpovl").addEventListener("click", e=>{ if(e.target.id==="helpovl") closeHelp(); });
 document.addEventListener("keydown", e=>{
-  if($("files-dialog").open) return;   // native dialog owns focus and Escape
+  if($("files-dialog").open || $("clipboard-dialog").open) return; // native dialog owns focus and Escape
   const t = e.target;
   if(t.tagName==="INPUT" || t.tagName==="TEXTAREA") return;   // path boxes / kbcap
   if(e.key==="Escape"){ closeHelp(); return; }
@@ -1161,10 +1214,12 @@ function copyText(t){
   return Promise.resolve(legacyCopy(t));
 }
 function legacyCopy(t){                         // http fallback; needs the click gesture
+  const previous = document.activeElement;
   const ta = document.createElement("textarea"); ta.value = t;
-  ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta);
+  ta.style.position="fixed"; ta.style.opacity="0";
+  (document.querySelector("dialog[open]") || document.body).appendChild(ta);
   ta.select(); let ok=false; try{ ok = document.execCommand("copy"); }catch(e){}
-  ta.remove(); return ok;
+  ta.remove(); if(previous?.isConnected) previous.focus({preventScroll:true}); return ok;
 }
 $("clipcopy").onclick = async ()=>{
   const ok = await copyText(clipText);
@@ -1179,15 +1234,72 @@ async function clipToDevice(text, paste){
     const j = await r.json();
     setStatus(r.ok ? (paste ? "기기에 붙여넣음" : "기기 클립보드에 넣음") +
               (j.via==="adbkeyboard" ? " (타이핑)" : "") : ("클립보드 실패: "+(j.error||r.status)));
-  }catch(e){ setStatus("클립보드 실패: 연결"); }
+    return r.ok;
+  }catch(e){ setStatus("클립보드 실패: 연결"); return false; }
 }
+let clipboardMode = "get";
+function openClipboard(mode, text, hint){
+  clipboardMode = mode;
+  $("clipboard-title").textContent = mode==="get" ? "기기 → 로컬 클립보드" : "로컬 → 기기 클립보드";
+  $("clipboard-hint").textContent = hint;
+  $("clipboard-text").value = text;
+  $("clipboard-text").readOnly = mode==="get";
+  $("clipboard-text").placeholder = mode==="put" ? "여기에 Ctrl/Cmd+V로 로컬 내용을 붙여넣으세요" : "";
+  $("clipboard-apply").textContent = mode==="get" ? "로컬로 복사" : "기기에 넣기";
+  $("clipboard-apply").disabled = mode==="get" && !text;
+  if(!$("clipboard-dialog").open) $("clipboard-dialog").showModal();
+  $("clipboard-text").focus(); $("clipboard-text").select();
+}
+$("clipboard-close").onclick = ()=> $("clipboard-dialog").close();
+$("clipboard-dialog").addEventListener("close", ()=>{
+  $("clipboard-text").value = ""; $("clipboard-hint").textContent = "";
+});
+$("clipboard-apply").onclick = async ()=>{
+  const text = $("clipboard-text").value;
+  if(!text){ $("clipboard-hint").textContent = "클립보드 내용이 비었습니다."; return; }
+  $("clipboard-apply").disabled = true;
+  try{
+    if(clipboardMode==="get"){
+      const ok = await copyText(text);
+      $("clipboard-hint").textContent = ok ? "로컬 클립보드에 복사했습니다." : "자동 복사가 차단됐습니다. 내용을 선택한 뒤 Ctrl/Cmd+C로 복사하세요.";
+      if(ok) setStatus("기기 클립보드를 로컬로 가져옴");
+    }else if(await clipToDevice(text, false)){
+      $("clipboard-dialog").close();
+    }else{
+      $("clipboard-hint").textContent = "전송하지 못했습니다. 기기 연결을 확인한 뒤 다시 시도하세요.";
+    }
+  }finally{ $("clipboard-apply").disabled = false; }
+};
+$("ckclipget").onclick = async ()=>{
+  $("ckclipget").disabled = true;
+  try{
+    const r = await fetch("/api/clip/read", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+    const j = await r.json();
+    if(!r.ok || !j.available){ setStatus("클립보드 가져오기 실패: "+(j.error||r.status)); return; }
+    clipSeq = j.seq; clipText = typeof j.text==="string" ? j.text : "";
+    openClipboard("get", clipText, clipText ? "로컬로 복사하거나 내용을 직접 선택해 복사하세요." : "기기 클립보드가 비었습니다.");
+    if(clipText){
+      const ok = await copyText(clipText);
+      $("clipboard-hint").textContent = ok ? "로컬 클립보드에 복사했습니다." : "로컬로 복사 버튼을 누르거나 Ctrl/Cmd+C로 복사하세요.";
+      setStatus(ok ? "기기 클립보드를 로컬로 가져옴" : "기기 클립보드를 가져옴 — 복사 버튼을 누르세요");
+    }
+  }catch(e){ setStatus("클립보드 가져오기 실패: 연결"); }
+  finally{ $("ckclipget").disabled = false; }
+};
 $("ckclip").onclick = async ()=>{
+  $("ckclip").disabled = true;
+  try{
   if(navigator.clipboard && navigator.clipboard.readText && window.isSecureContext){
-    try{ const t = await navigator.clipboard.readText(); if(t){ clipToDevice(t, true); return; } }
-    catch(e){ /* permission denied → hint below */ }
+    let text;
+    try{ text = await navigator.clipboard.readText(); }catch(e){ /* manual paste below */ }
+    if(text!==undefined){
+      if(text) await clipToDevice(text, false);
+      else setStatus("로컬 클립보드가 비었습니다.");
+      return;
+    }
   }
-  $("kbcap").focus({preventScroll:true});
-  setStatus("화면을 클릭한 뒤 Ctrl/Cmd+V 로 붙여넣으세요 (http 접속에서는 버튼으로 읽을 수 없음)");
+  openClipboard("put", "", "브라우저가 클립보드 읽기를 허용하지 않습니다. 아래에 Ctrl/Cmd+V로 붙여넣고 기기에 넣기를 누르세요.");
+  }finally{ $("ckclip").disabled = false; }
 };
 
 // ---- live screen: PNG frames (fallback renderer) ----
@@ -1216,7 +1328,8 @@ async function scrPost(path, body){
   body.src ??= renderer==="png" ? "png" : "video";
   try{ const r = await fetch("/api/screen/"+path, {method:"POST",
     headers:{"Content-Type":"application/json"}, body:JSON.stringify(body),
-    signal:AbortSignal.timeout(5000), keepalive:path==="touch" && ["up","cancel"].includes(body.action)});
+    signal:AbortSignal.timeout(path==="composition" && body.phase==="start" ? 15000 : 5000),
+    keepalive:path==="touch" && ["up","cancel"].includes(body.action)});
     if(!r.ok) setStatus("입력 실패: " + r.status);
     return r.ok;
   }catch(e){ setStatus("입력 연결 실패"); return false; }
@@ -1229,19 +1342,19 @@ async function touchPump(){
   touchBusy = true;
   try{ while(touchQ.length){
     const e = touchQ.shift();
-    if(!await scrPost(e.path, e.body)){
+    if((e.after && !await e.after) || !await scrPost(e.path, e.body)){
       touchQ = touchQ.filter(n=>n.body.gesture !== e.body.gesture);
       if(pd && pd.gesture===e.body.gesture) cancelPointer();
     }
   }}finally{ touchBusy = false; }
 }
-function touchEnqueue(path, body){
+function touchEnqueue(path, body, after=null){
   const tail = touchQ[touchQ.length-1];
   if(path==="touch" && body.action==="move" && tail?.path===path &&
      tail.body.action==="move" && tail.body.gesture===body.gesture) tail.body=body;
   else if(path==="scroll" && tail?.path===path){
     body.dy = Math.max(-16, Math.min(16, body.dy+tail.body.dy)); tail.body=body;
-  }else touchQ.push({path,body});
+  }else touchQ.push({path,body,after});
   touchPump();
 }
 function dims(el){
@@ -1254,7 +1367,7 @@ function point(el, e){
   return {cx:e.clientX-r.left, cy:e.clientY-r.top, ew:r.width, eh:r.height, iw, ih};
 }
 function pointerSend(action){
-  if(pd?.live) touchEnqueue("touch", {...pd.pos, src:"video", gesture:pd.gesture, action});
+  if(pd?.live) touchEnqueue("touch", {...pd.pos, src:"video", gesture:pd.gesture, action}, action==="down"?pd.after:null);
 }
 function cancelPointer(){
   clearTimeout(moveT); clearInterval(holdT); moveT=holdT=null;
@@ -1266,8 +1379,9 @@ function cancelPointer(){
     if(e.button!==0 || pd) return;
     e.preventDefault();
     const pos=point(el,e); if(!pos.iw || !pos.ih) return;
+    const after=keyboardBoundary();
     pd={pos, x:pos.cx, y:pos.cy, t:Date.now(), id:e.pointerId, el,
-        live:renderer!=="png", gesture:Date.now()+":"+Math.random().toString(36).slice(2)};
+        live:renderer!=="png", after, gesture:Date.now()+":"+Math.random().toString(36).slice(2)};
     pointerSend("down");
     if(pd.live) holdT=setInterval(()=>pointerSend("move"),500);
     try{ el.setPointerCapture(e.pointerId); }catch(_){}
@@ -1282,13 +1396,24 @@ function cancelPointer(){
     clearTimeout(moveT); clearInterval(holdT); moveT=holdT=null;
     pd.pos=point(el,e);
     if(pd.live) pointerSend("up");
-    else if(Math.hypot(pd.pos.cx-pd.x,pd.pos.cy-pd.y)>12)
-      scrPost("swipe",{...pd.pos, src:"png", cx1:pd.x,cy1:pd.y,cx2:pd.pos.cx,cy2:pd.pos.cy,ms:Math.max(120,Date.now()-pd.t)});
-    else scrPost("tap",{...pd.pos,src:"png",cx:pd.x,cy:pd.y});
+    else {
+      const path=Math.hypot(pd.pos.cx-pd.x,pd.pos.cy-pd.y)>12?"swipe":"tap";
+      const body={...pd.pos,src:"png",cx:pd.x,cy:pd.y,cx1:pd.x,cy1:pd.y,cx2:pd.pos.cx,cy2:pd.pos.cy,ms:Math.max(120,Date.now()-pd.t)};
+      if(pd.after) pd.after.then(ok=>{if(ok) scrPost(path,body);});
+      else scrPost(path,body);
+    }
     pd=null;
   });
   for(const name of ["pointercancel","lostpointercapture"])
     el.addEventListener(name,e=>{ if(pd?.id===e.pointerId) cancelPointer(); });
+  el.addEventListener("contextmenu", e=>{
+    e.preventDefault();
+    if(renderer==="png"){ setStatus("우클릭은 H.264 영상 모드에서 사용할 수 있습니다."); return; }
+    const pos=point(el,e); if(!pos.iw || !pos.ih) return;
+    if(pd) cancelPointer();
+    $("kbcap").focus({preventScroll:true});
+    touchEnqueue("rightclick", {...pos,src:"video"},keyboardBoundary());
+  });
   el.addEventListener("wheel", e=>{
     if(e.ctrlKey || e.metaKey || renderer==="png" || pd) return;
     e.preventDefault();
@@ -1467,37 +1592,94 @@ $("push").onclick = ()=> transfer("push");
 
 // ---- keyboard → device: a hidden textarea captures keys (IME-aware) ----
 const kbcap = $("kbcap");
-let kbuf = "", kbT = null;
-let keyTail = Promise.resolve();
+let kbuf = "";
+let keyTail = Promise.resolve(), keyQ = [], keyBusy = false;
+async function keyPump(){
+  if(keyBusy) return;
+  keyBusy = true;
+  try{
+    while(keyQ.length){
+      const action = keyQ.shift(); let ok = false;
+      try{ ok = await (action.run ? action.run() : scrPost(action.path, action.body)); }
+      catch(e){ setStatus("입력 연결 실패"); }
+      action.waiters.forEach(resolve=>resolve(ok!==false));
+      if(ok===false){
+        // A timed-out input may have applied. Never replay it or send a queued Enter.
+        keyQ.splice(0).forEach(pending=>pending.waiters.forEach(resolve=>resolve(false)));
+        setStatus("입력 전송 중단 — 기기 내용을 확인한 뒤 다시 입력하세요");
+        break;
+      }
+    }
+  }finally{ keyBusy = false; }
+}
+function keyAction(action){
+  const tail = keyQ[keyQ.length-1];
+  keyTail = new Promise(resolve=>{
+    if(action.path==="composition" && tail?.path==="composition" &&
+       action.body.phase==="update" && tail.body.phase==="update" &&
+       tail.body.session===action.body.session && tail.body.src===action.body.src){
+      tail.body = action.body; tail.waiters.push(resolve); // newest preedit replaces, never appends
+    }else if(action.path==="text" && tail?.path==="text" && tail.body.src===action.body.src){
+      tail.body.text += action.body.text; tail.waiters.push(resolve);
+    }else{
+      action.waiters=[resolve]; keyQ.push(action);
+    }
+  });
+  keyPump(); return keyTail;
+}
 function keyPost(path,body){
-  keyTail=keyTail.then(()=>scrPost(path,body)); return keyTail;
+  body.src ??= renderer==="png" ? "png" : "video";
+  return keyAction({path,body});
 }
 const KMAP = {Backspace:67, Enter:66, Tab:61, ArrowUp:19, ArrowDown:20, ArrowLeft:21,
               ArrowRight:22, Delete:112, Home:122, End:123, PageUp:92, PageDown:93};
 function kbFlush(){
-  if(kbT){ clearTimeout(kbT); kbT=null; }
   if(kbuf){ const t=kbuf; kbuf=""; keyPost("text", {text:t}); }
   return keyTail;
 }
-function kbQueue(t){                 // bounded batching: continuous typing also flushes every 60ms
+function kbQueue(t){                 // first text is immediate; pending text coalesces behind one ACK
   if(!t) return;
   kbuf += t;
-  if(!kbT) kbT = setTimeout(kbFlush, 60);
+  kbFlush();
 }
+const imeOwner = Date.now().toString(36)+"_"+Math.random().toString(36).slice(2);
+let imeSerial=0, imeSession=null;
+function imeStart(){
+  if(imeSession) return;
+  imeSession = {id:imeOwner+":"+(++imeSerial),src:renderer==="png"?"png":"video"};
+  keyPost("composition",{session:imeSession.id,phase:"start",text:"",src:imeSession.src});
+}
+function imeUpdate(){
+  imeStart();
+  keyPost("composition",{session:imeSession.id,phase:"update",text:kbcap.value,src:imeSession.src});
+}
+function imeFinish(){
+  if(!imeSession) return;
+  const session=imeSession; imeSession=null;
+  const text=kbcap.value; kbcap.value="";
+  keyPost("composition",{session:session.id,phase:"commit",text,src:session.src});
+}
+function keyboardBoundary(){
+  if(imeSession){ kbcap.blur(); imeFinish(); }
+  return keyBusy ? keyTail : null;
+}
+kbcap.addEventListener("compositionstart",imeStart);
 kbcap.addEventListener("keydown", e=>{
   e.stopPropagation();
-  if(e.isComposing || e.keyCode===229) return;           // Korean syllable still composing
+  if(imeSession || e.isComposing || e.keyCode===229) return; // Enter confirms composition, never submits
   if(e.key==="Escape"){ e.preventDefault(); kbcap.blur(); return; }
   if(e.ctrlKey || e.metaKey || e.altKey) return;
   const code = KMAP[e.key];
   if(code!==undefined){ e.preventDefault(); kbFlush(); keyPost("key", {code}); }
 });
 kbcap.addEventListener("input", e=>{
-  if(e.isComposing) return;                              // wait for compositionend
+  if(e.isComposing){ imeUpdate(); return; }
+  if(imeSession){ imeUpdate(); return; }                 // WebKit may omit isComposing
   const v = kbcap.value; kbcap.value = ""; kbQueue(v);
 });
 kbcap.addEventListener("compositionend", ()=>{
-  const v = kbcap.value; kbcap.value = ""; kbQueue(v);   // committed syllables only
+  if(imeSession) imeFinish();
+  else { const v=kbcap.value; kbcap.value=""; kbQueue(v); } // input source without compositionstart
 });
 // Ctrl/Cmd+V while the screen has the keyboard: text → device clipboard + paste
 // into the focused field (exact, keeps newlines); images/files → device Download
@@ -1512,10 +1694,14 @@ kbcap.addEventListener("paste", e=>{
     return;
   }
   const t = cd.getData("text");
-  if(t){ e.preventDefault(); kbFlush(); keyTail=keyTail.then(()=>clipToDevice(t, true)); }
+  if(t){
+    e.preventDefault(); keyboardBoundary(); kbFlush();
+    keyAction({run:()=>clipToDevice(t, true)});
+    kbcap.focus({preventScroll:true});
+  }
 });
 kbcap.addEventListener("focus", ()=> $("conwrap").classList.add("kbon"));
-kbcap.addEventListener("blur", ()=>{ kbFlush(); $("conwrap").classList.remove("kbon"); });
+kbcap.addEventListener("blur", ()=>{ imeFinish(); kbFlush(); $("conwrap").classList.remove("kbon"); });
 
 
 // ================= H.264 video: WebCodecs → MSE(fMP4) → PNG =================

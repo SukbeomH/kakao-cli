@@ -1,0 +1,957 @@
+{
+  "date": "2026-10-26",
+  "method": "Chrome CDP Input.imeSetComposition / Input.insertText, actual HTTP and Android InputConnection, UI XML exact readback; physical macOS IME keystrokes not tested",
+  "apk_sha256": "3241a440b8dc838f272d72252d811be4fbf0186eb252fd3cc6450de1b54a459a",
+  "fresh_install": {
+    "browser": "Chrome CDP native composition",
+    "renderer": "png",
+    "device": "android-console VM, Android Settings search",
+    "samples": [
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 542
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 24
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 22
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 26
+      },
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 32
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 19
+      },
+      {
+        "preedit": "한국",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 19
+      },
+      {
+        "preedit": "어",
+        "expected": "한국어",
+        "value": "한국어",
+        "ackMs": 44
+      },
+      {
+        "preedit": "",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 42
+      }
+    ],
+    "commitOnce": true,
+    "cancelPreservesPrefix": true,
+    "plainUnicodeAfterHelper": true,
+    "pageErrors": [],
+    "requests": [
+      {
+        "path": "/api/screen/tap",
+        "body": {
+          "cx": 223.59375,
+          "cy": 211.171875,
+          "ew": 447.1875,
+          "eh": 795,
+          "iw": 720,
+          "ih": 1280,
+          "src": "png",
+          "cx1": 223.59375,
+          "cy1": 211.171875,
+          "cx2": 223.59375,
+          "cy2": 211.171875,
+          "ms": 120
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "start",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "하",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "한",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "하",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "한",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:1",
+          "phase": "commit",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:2",
+          "phase": "start",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:2",
+          "phase": "update",
+          "text": "어",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:2",
+          "phase": "update",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaplbw_k5gjg1mqnr:2",
+          "phase": "commit",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/text",
+        "body": {
+          "text": " ABC🙂",
+          "src": "png"
+        }
+      }
+    ]
+  },
+  "png_mirror": {
+    "browser": "Chrome CDP native composition",
+    "device": "android-console VM, Android Settings search",
+    "samples": [
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 88
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 27
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 33
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 32
+      },
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 27
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 24
+      },
+      {
+        "preedit": "한국",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 27
+      },
+      {
+        "preedit": "어",
+        "expected": "한국어",
+        "value": "한국어",
+        "ackMs": 58
+      },
+      {
+        "preedit": "",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 50
+      }
+    ],
+    "commitOnce": true,
+    "cancelPreservesPrefix": true,
+    "plainUnicodeAfterHelper": true,
+    "pageErrors": [],
+    "requests": [
+      {
+        "path": "/api/screen/tap",
+        "body": {
+          "cx": 223.59375,
+          "cy": 211.171875,
+          "ew": 447.1875,
+          "eh": 795,
+          "iw": 720,
+          "ih": 1280,
+          "src": "png",
+          "cx1": 223.59375,
+          "cy1": 211.171875,
+          "cx2": 223.59375,
+          "cy2": 211.171875,
+          "ms": 120
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "start",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "하",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "한",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "하",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "한",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:1",
+          "phase": "commit",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:2",
+          "phase": "start",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:2",
+          "phase": "update",
+          "text": "어",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:2",
+          "phase": "update",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpa8814_olhz4sprcwq:2",
+          "phase": "commit",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/text",
+        "body": {
+          "text": " ABC🙂",
+          "src": "png"
+        }
+      }
+    ],
+    "renderer": "png"
+  },
+  "webcodecs_virtual": {
+    "browser": "Chrome CDP native composition",
+    "device": "android-console VM, Android Settings search",
+    "samples": [
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 50
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 30
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 28
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 30
+      },
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 30
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 23
+      },
+      {
+        "preedit": "한국",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 24
+      },
+      {
+        "preedit": "어",
+        "expected": "한국어",
+        "value": "한국어",
+        "ackMs": 44
+      },
+      {
+        "preedit": "",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 49
+      }
+    ],
+    "commitOnce": true,
+    "cancelPreservesPrefix": true,
+    "plainUnicodeAfterHelper": true,
+    "pageErrors": [],
+    "requests": [
+      {
+        "path": "/api/screen/touch",
+        "body": {
+          "cx": 230.5,
+          "cy": 201.683837890625,
+          "ew": 461,
+          "eh": 770.96875,
+          "iw": 464,
+          "ih": 776,
+          "src": "video",
+          "gesture": "1793020935815:e9cnc8nvbda",
+          "action": "down"
+        }
+      },
+      {
+        "path": "/api/screen/touch",
+        "body": {
+          "cx": 230.5,
+          "cy": 201.683837890625,
+          "ew": 461,
+          "eh": 770.96875,
+          "iw": 464,
+          "ih": 776,
+          "src": "video",
+          "gesture": "1793020935815:e9cnc8nvbda",
+          "action": "up"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "start",
+          "text": "",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "하",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "한",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "하",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "한",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:1",
+          "phase": "commit",
+          "text": "한국",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:2",
+          "phase": "start",
+          "text": "",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:2",
+          "phase": "update",
+          "text": "어",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:2",
+          "phase": "update",
+          "text": "",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpad8dj_zfbvjmg5wbb:2",
+          "phase": "commit",
+          "text": "",
+          "src": "video"
+        }
+      },
+      {
+        "path": "/api/screen/text",
+        "body": {
+          "text": " ABC🙂",
+          "src": "video"
+        }
+      }
+    ],
+    "renderer": "wc",
+    "mode": "virtual"
+  },
+  "final_image_and_session_guards": {
+    "browser": "Chrome CDP native composition",
+    "renderer": "png",
+    "device": "android-console VM, Android Settings search",
+    "samples": [
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 161
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 23
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 23
+      },
+      {
+        "preedit": "하",
+        "expected": "하",
+        "value": "하",
+        "ackMs": 20
+      },
+      {
+        "preedit": "ㅎ",
+        "expected": "ㅎ",
+        "value": "ㅎ",
+        "ackMs": 22
+      },
+      {
+        "preedit": "한",
+        "expected": "한",
+        "value": "한",
+        "ackMs": 25
+      },
+      {
+        "preedit": "한국",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 20
+      },
+      {
+        "preedit": "어",
+        "expected": "한국어",
+        "value": "한국어",
+        "ackMs": 38
+      },
+      {
+        "preedit": "",
+        "expected": "한국",
+        "value": "한국",
+        "ackMs": 40
+      }
+    ],
+    "commitOnce": true,
+    "cancelPreservesPrefix": true,
+    "plainUnicodeAfterHelper": true,
+    "foreignViewerRejected": true,
+    "retiredSessionRejected": true,
+    "focusLossRejected": true,
+    "pageErrors": [],
+    "requests": [
+      {
+        "path": "/api/screen/tap",
+        "body": {
+          "cx": 223.59375,
+          "cy": 211.171875,
+          "ew": 447.1875,
+          "eh": 795,
+          "iw": 720,
+          "ih": 1280,
+          "src": "png",
+          "cx1": 223.59375,
+          "cy1": 211.171875,
+          "cx2": 223.59375,
+          "cy2": 211.171875,
+          "ms": 120
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "start",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "하",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "한",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "하",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "ㅎ",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "한",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "update",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:1",
+          "phase": "commit",
+          "text": "한국",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:2",
+          "phase": "start",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:2",
+          "phase": "update",
+          "text": "어",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:2",
+          "phase": "update",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "mvpaurst_ujsws34av88:2",
+          "phase": "commit",
+          "text": "",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/text",
+        "body": {
+          "text": " ABC🙂",
+          "src": "png"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerA:1",
+          "phase": "start",
+          "text": ""
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerA:1",
+          "phase": "update",
+          "text": "검"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerB:1",
+          "phase": "start",
+          "text": ""
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerA:1",
+          "phase": "commit",
+          "text": "검"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerA:1",
+          "phase": "update",
+          "text": "stale"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerA:2",
+          "phase": "start",
+          "text": ""
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerA:2",
+          "phase": "update",
+          "text": "입력"
+        }
+      },
+      {
+        "path": "/api/screen/composition",
+        "body": {
+          "session": "ownerA:2",
+          "phase": "update",
+          "text": "stale focus"
+        }
+      }
+    ]
+  },
+  "pytest": {
+    "passed": 243,
+    "seconds": 75.29
+  },
+  "verified_image": "sha256:54c5f0250622d548468d02e7aea34f66484839434b8ed62e994f68bb741bc730"
+}

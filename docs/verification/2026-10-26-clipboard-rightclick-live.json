@@ -1,0 +1,35 @@
+{
+  "errors": [],
+  "base": "http://127.0.0.1:8801",
+  "originalDeviceTextReadable": false,
+  "localToAndroid": {
+    "nativeClipboardRead": true,
+    "storeDidNotPaste": true,
+    "androidNativePasteReadback": true
+  },
+  "androidToLocal": {
+    "androidNativeCopy": true,
+    "readButton": true,
+    "nativeMacPasteboardReadback": true
+  },
+  "rightClickEvents": [
+    "MotionEvent(deviceId=-1, eventTime=478149000000, source=MOUSE, displayId=0, action=DOWN, actionButton=0x00000000, flags=0x00000000, metaState=0x00000000, buttonState=0x00000002, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=334.0, yCursorPosition=83.0, pointers=[0: (334.0, 83.0)]), policyFlags=0x6b000000, age=410ms",
+    "MotionEvent(deviceId=-1, eventTime=478149000000, source=MOUSE, displayId=0, action=BUTTON_PRESS, actionButton=0x00000002, flags=0x00000000, metaState=0x00000000, buttonState=0x00000002, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=334.0, yCursorPosition=83.0, pointers=[0: (334.0, 83.0)]), policyFlags=0x6b000000, age=410ms",
+    "MotionEvent(deviceId=-1, eventTime=478152000000, source=MOUSE, displayId=0, action=BUTTON_RELEASE, actionButton=0x00000002, flags=0x00000000, metaState=0x00000000, buttonState=0x00000000, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=334.0, yCursorPosition=83.0, pointers=[0: (334.0, 83.0)]), policyFlags=0x6b000000, age=407ms",
+    "MotionEvent(deviceId=-1, eventTime=478152000000, source=MOUSE, displayId=0, action=UP, actionButton=0x00000000, flags=0x00000000, metaState=0x00000000, buttonState=0x00000000, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=334.0, yCursorPosition=83.0, pointers=[0: (334.0, 83.0)]), policyFlags=0x6b000000, age=407ms"
+  ],
+  "rightClick": {
+    "inputDispatcherObserved": true,
+    "secondaryButton": true,
+    "release": true,
+    "nativeContextMenuVisible": true
+  },
+  "date": "2026-10-26",
+  "vm": "android-console",
+  "webuiImage": "sha256:4a4c09741669a80e6601069376997bcf4aa6c040eb4d74b8d9836b8b2a7a90be",
+  "macClipboardRestoredAllCapturedFormats": true,
+  "testAndroidClipboardCleared": true,
+  "testAndroidClipboardRestored": false,
+  "vmLeftRunning": true,
+  "kakaoVmState": "Stopped"
+}

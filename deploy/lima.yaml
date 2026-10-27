@@ -1,5 +1,5 @@
 # Apple Silicon 전용 신규 VM. bridge @097a9b8(MIT) 구성을 참고, NOTICE 참조.
-minimumLimaVersion: 2.0.0
+minimumLimaVersion: 2.2.0
 images:
   - location: https://cloud-images.ubuntu.com/releases/noble/release-20260926/ubuntu-24.04-server-cloudimg-arm64.img
     arch: aarch64
@@ -20,6 +20,7 @@ portForwards:
   - guestPort: 8800
     hostPort: 8800
     hostIP: 127.0.0.1
+    static: true
   - guestPortRange: [1, 65535]
     proto: any
     ignore: true

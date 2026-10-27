@@ -561,6 +561,11 @@ def test_scrcpy_control_encoding():
     except ValueError:
         pass
     assert S.enc_reset_video() == b"\x11"
+    assert S.enc_get_clipboard() == b"\x08\x00"
+    mouse = S.enc_secondary_click(123, 456, 720, 1280)
+    down, up = (struct.unpack(">BBqiiHHHii", mouse[i:i+32]) for i in (0, 32))
+    assert down == (2, 0, -1, 123, 456, 720, 1280, 65535, 2, 2)
+    assert up == (2, 1, -1, 123, 456, 720, 1280, 0, 2, 0)
     assert S.enc_start_app("com.kakao.talk") == b"\x10\x0e" + b"com.kakao.talk"
     assert S.enc_resize_display(1280, 800) == struct.pack(">BHH", 21, 1280, 800)
     assert S.enc_scan_file("/sdcard/a") == struct.pack(">Bi", 22, 9) + b"/sdcard/a"
@@ -656,6 +661,8 @@ class _FakeBridge:
         self.connected = True; self.on_change = None; self.sets = []; self.seq = 0; self.text = ""
     def clip(self):
         return self.seq, self.text
+    def get_clipboard(self):
+        return self.seq, self.text
     def set_clipboard(self, text, paste=False, timeout=3.0):
         self.sets.append((text, paste)); return True
 
@@ -678,12 +685,23 @@ def test_clipboard_api(tmp_path):
         assert "기기에서" not in _json.dumps(snap, ensure_ascii=False)   # text not in polls
         st, b = _http("GET", base + "/api/clip")
         assert st == 200 and _json.loads(b)["text"] == "기기에서 복사"
+        st, body = _http("POST", base + "/api/clip/read", {})
+        assert st == 200 and _json.loads(body)["text"] == "기기에서 복사"
+        def read_timeout():
+            raise TimeoutError("no reply")
+        read_clipboard = bridge.get_clipboard
+        bridge.get_clipboard = read_timeout
+        assert _http("POST", base + "/api/clip/read", {})[0] == 504
+        bridge.get_clipboard = read_clipboard
+        assert _req(base, "POST", "/api/clip/read", b'{}', {"Content-Type": "text/plain"})[0] == 415
+        assert _req(base, "POST", "/api/clip/read", b'{}', {"Content-Type": "application/json", "Origin": "http://evil.invalid"})[0] == 403
         assert _http("POST", base + "/api/clip", {"text": "붙여넣기", "paste": True})[0] == 200
         assert bridge.sets == [("붙여넣기", True)]
         assert _http("POST", base + "/api/clip", {"text": ""})[0] == 400
         assert _http("POST", base + "/api/clip", {"text": "x" * (CLIP_MAX + 1)})[0] == 400
         assert _req(base, "POST", "/api/clip", b'{"text":"a"}', {"Content-Type": "text/plain"})[0] == 415
         bridge.connected = False                      # no scrcpy: paste → ADBKeyBoard typing
+        assert _http("POST", base + "/api/clip/read", {})[0] == 503
         assert _http("POST", base + "/api/clip", {"text": "타이핑", "paste": True})[0] == 200
         assert ("screentext", "타이핑") in worker.puts
         assert _http("POST", base + "/api/clip", {"text": "x"})[0] == 503

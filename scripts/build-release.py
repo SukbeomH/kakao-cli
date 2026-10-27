@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a source-only Mac bootstrap asset. APKs, VM disks, images and keys are excluded."""
+"""Build a Mac bootstrap: source plus our IME helper; no third-party APKs or VM data."""
 import argparse
 import hashlib
 import io
@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 TOP_FILES = {"Dockerfile", ".dockerignore", "pyproject.toml", "uv.lock", "README.md", "NOTICE"}
 SOURCE_DIRS = {"src", "scripts", "deploy", "docs", "completions", "tests", "packages"}
 SOURCE_SUFFIXES = {".py", ".sh", ".yaml", ".json", ".md", ".txt", ".java", ".js", ".cjs", ".1", ".service"}
+IME_DIR = "packages/android-console/src/android_console/ime_assets/"
+IME_ASSETS = {IME_DIR + name for name in ("android-console-ime.apk", "android-console-ime.sha256",
+              "AndroidManifest.xml", "res/xml/input_method.xml")}
 
 
 def source_files(root):
@@ -29,12 +32,16 @@ def source_files(root):
         package_metadata = path.parts[0] == "packages" and (
             path.name in {"NOTICE", "Dockerfile", ".dockerignore"} or path.suffix == ".toml")
         if (name not in TOP_FILES and path.suffix not in SOURCE_SUFFIXES
-                and path.parts[0] != "completions" and not package_metadata):
+                and path.parts[0] != "completions" and not package_metadata and name not in IME_ASSETS):
             raise ValueError(f"Non-source file cannot be released: {name}")
         full = root / name
         if full.is_symlink() or not full.is_file():
             raise ValueError(f"Release inputs must be regular files: {name}")
         selected.append(name)
+    if IME_DIR + "android-console-ime.apk" in selected:
+        digest = hashlib.sha256((root / (IME_DIR + "android-console-ime.apk")).read_bytes()).hexdigest()
+        if digest != (root / (IME_DIR + "android-console-ime.sha256")).read_text().strip():
+            raise ValueError("Console IME helper hash mismatch")
     required = {"scripts/setup-macos.sh", "scripts/download-apks.py", "deploy/apks.json", "deploy/lima.yaml",
                 "packages/android-console/pyproject.toml",
                 "packages/android-console/src/android_console/webui.py"}

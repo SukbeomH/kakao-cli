@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import tempfile
+from . import __version__
 
 
 def export_runtime(directory):
@@ -15,13 +16,14 @@ def export_runtime(directory):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".android-console-export-", dir=destination.parent) as temporary:
         stage = Path(temporary) / "runtime"
-        shutil.copytree(source / "runtime_assets", stage)
+        shutil.copytree(source / "runtime_assets", stage,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         package = stage / "python-package"
         shutil.copytree(source, package / "src" / "android_console",
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        (package / "pyproject.toml").write_text('''[project]
+        (package / "pyproject.toml").write_text(f'''[project]
 name = "android-console"
-version = "0.1.0"
+version = "{__version__}"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = []

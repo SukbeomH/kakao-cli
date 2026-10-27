@@ -195,7 +195,7 @@ with open(os.environ['TASK_TEST_LOG'],'a') as out:
 
 
 @pytest.mark.parametrize("tracked_apk", [False, True])
-def test_release_archive_excludes_local_state_and_refuses_tracked_binaries(tmp_path, tracked_apk):
+def test_release_archive_excludes_local_state_and_refuses_other_tracked_binaries(tmp_path, tracked_apk):
     import tarfile
     project = tmp_path / "project"
     project.mkdir()
@@ -209,11 +209,18 @@ def test_release_archive_excludes_local_state_and_refuses_tracked_binaries(tmp_p
         'deploy/lima.yaml': 'cpus: 2\n',
         'packages/android-console/pyproject.toml': '[project]\nname="android-console"\n',
         'packages/android-console/src/android_console/webui.py': '# shared console\n',
+        builder.IME_DIR + 'android-console-ime.apk': b'own helper fixture',
+        builder.IME_DIR + 'android-console-ime.sha256': hashlib.sha256(b'own helper fixture').hexdigest() + '\n',
+        builder.IME_DIR + 'AndroidManifest.xml': '<manifest />',
+        builder.IME_DIR + 'res/xml/input_method.xml': '<input-method />',
     }
     for name, content in sources.items():
         path = project / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content)
     subprocess.run(['git', 'init', '-q', str(project)], check=True)
     subprocess.run(['git', 'add', '.'], cwd=project, check=True)
     (project / 'deploy/.env').write_text('personal secret')
@@ -230,4 +237,9 @@ def test_release_archive_excludes_local_state_and_refuses_tracked_binaries(tmp_p
             names = tar.getnames()
             assert len(names) == len(sources) + 1
             assert any(name.endswith('/release-files.txt') for name in names)
-            assert not any(name.endswith(('.env', '.key', '.apk')) or '/.git/' in name for name in names)
+            assert not any(name.endswith(('.env', '.key')) or '/.git/' in name for name in names)
+            assert [name for name in names if name.endswith('.apk')] == [
+                'kakao-cli-0.1.0-macos-arm64/' + builder.IME_DIR + 'android-console-ime.apk']
+        (project / (builder.IME_DIR + 'android-console-ime.apk')).write_bytes(b'tampered helper')
+        with pytest.raises(ValueError, match='helper hash mismatch'):
+            builder.build(project, tmp_path / 'bad-dist')

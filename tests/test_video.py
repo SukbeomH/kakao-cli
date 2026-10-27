@@ -280,7 +280,7 @@ class _Worker:
     def put(self, *cmd):
         self.puts.append(cmd)
 
-    def put_wait(self, *cmd):
+    def put_wait(self, *cmd, **kwargs):
         if cmd[0] == "consolekey":
             cmd[1].key(cmd[2])
         else:
@@ -306,6 +306,28 @@ def _post(port, path, body):
     c.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
     r = c.getresponse()
     return r.status, json.loads(r.read() or b"{}")
+
+
+def test_composition_endpoint_validates_and_uses_ordered_worker():
+    httpd, worker, port = _server()
+    try:
+        body = {"session": "viewer:1", "phase": "update", "text": "한"}
+        assert _post(port, "/api/screen/composition", body)[0] == 200
+        assert worker.puts == [("composition", body)]
+        assert _post(port, "/api/screen/composition", dict(body, text=["invalid"]))[0] == 400
+        assert _post(port, "/api/screen/composition", dict(body, phase="delete"))[0] == 400
+        assert len(worker.puts) == 1
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request("POST", "/api/screen/composition", json.dumps(body),
+                  {"Content-Type": "application/json", "Origin": "http://evil.invalid"})
+        response = c.getresponse()
+        assert response.status == 403
+        response.read(); c.close()
+        assert len(worker.puts) == 1
+        worker.put_wait = lambda *a, **kw: (_ for _ in ()).throw(TimeoutError("fixture"))
+        assert _post(port, "/api/screen/composition", body)[0] == 503
+    finally:
+        httpd.shutdown()
 
 
 def _read_frame(r):
@@ -432,6 +454,13 @@ def test_input_routes_to_the_display_the_viewer_sees():
         st, j = _post(port, "/api/screen/tap", {"cx": 232, "cy": 186, "ew": 464, "eh": 372,
                                                 "iw": 928, "ih": 744, "src": "video"})
         assert st == 200 and j["via"] == "scrcpy" and br.taps[-1] == (464, 372, 928, 744)
+        from kakao_cli.scrcpy import enc_secondary_click
+        point = {"cx": 232, "cy": 186, "ew": 464, "eh": 372, "iw": 928, "ih": 744, "src": "video"}
+        assert _post(port, "/api/screen/rightclick", point)[0] == 200
+        assert br.sent[-1] == enc_secondary_click(464, 372, 928, 744)
+        before = len(br.sent)
+        assert _post(port, "/api/screen/rightclick", dict(point, src="png"))[0] == 409
+        assert len(br.sent) == before
         st, j = _post(port, "/api/screen/swipe", {"cx1": 0, "cy1": 0, "cx2": 463, "cy2": 371,
                                                   "ew": 464, "eh": 372, "iw": 928, "ih": 744, "src": "video"})
         assert j["via"] == "scrcpy" and br.swipes[-1][:6] == (0, 0, 926, 742, 928, 744)

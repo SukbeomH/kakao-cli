@@ -1,5 +1,5 @@
 """kakao-cli: drive the official KakaoTalk Android app (Waydroid) over adb."""
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 PACKAGE = "com.kakao.talk"
 LAUNCHER_ACTIVITY = "com.kakao.talk.activity.SplashActivity"

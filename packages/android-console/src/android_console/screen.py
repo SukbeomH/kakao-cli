@@ -2,7 +2,7 @@
 
 Pure, testable bits (coordinate transform, PNG sizing) plus a
 small thread-safe frame buffer. The actual screencap/tap/swipe run through the
-Worker so all device access stays serialized.
+Worker so input stays serialized; read-only captures run independently of input.
 """
 from __future__ import annotations
 import struct
