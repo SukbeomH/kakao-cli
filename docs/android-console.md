@@ -154,7 +154,7 @@ Kakao 배포 시 두 wheel을 함께 제공하거나 공통 패키지를 먼저 
 아직 PyPI에 게시하지 않은 상태에서 root wheel만 단독 배포하지 마세요.
 
 ```sh
-python -m pip install ./android_console-0.1.2-py3-none-any.whl ./kakao_cli-0.1.5-py3-none-any.whl
+python -m pip install ./android_console-0.1.2-py3-none-any.whl ./kakao_cli-0.1.6-py3-none-any.whl
 ```
 
 ## VM VPN 공통 관리

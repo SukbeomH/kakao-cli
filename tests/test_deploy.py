@@ -106,3 +106,53 @@ with open(os.environ['KAKAO_TEST_CALLS'],'a') as out:
     result = subprocess.run(['bash','scripts/lima-compose.sh','config','--quiet'], cwd=ROOT, env=env, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert 'deploy/compose.network.yaml' not in json.loads(log.read_text().splitlines()[-1])
+
+
+def test_vm_vpn_mss_rules_are_bidirectional_idempotent_and_scoped(tmp_path):
+    # No real firewall is touched. Emulate the kernel's existing-rule checks.
+    log, state = tmp_path/'iptables.jsonl', tmp_path/'rules.json'
+    stub(tmp_path/'uname', '#!/bin/sh\necho Linux\n')
+    stub(tmp_path/'iptables', '''#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+args=sys.argv[1:]
+log=Path(os.environ['MSS_TEST_LOG']); state=Path(os.environ['MSS_TEST_STATE'])
+with log.open('a') as f:f.write(json.dumps(args)+'\\n')
+rules=json.loads(state.read_text()) if state.exists() else []
+i=next(i for i,a in enumerate(args) if a in ('-C','-A')); rule=args[i+1:]
+if args[i]=='-C':sys.exit(0 if rule in rules else 1)
+rules.append(rule);state.write_text(json.dumps(rules))
+''')
+    # EUID is readonly in bash; use a Linux root emulation by dropping only the
+    # guard from a temp copy. The production script keeps its actual root check.
+    source=(ROOT/'scripts/vm-vpn-mss.sh').read_text()
+    assert 'Linux' in source and '"$EUID" == 0' in source
+    copy=tmp_path/'mss.sh'
+    copy.write_text('\n'.join(l for l in source.splitlines() if not l.startswith('[[ "$(uname'))+'\n')
+    env=dict(os.environ, PATH=str(tmp_path)+os.pathsep+os.environ['PATH'],
+             MSS_TEST_LOG=str(log), MSS_TEST_STATE=str(state))
+    for _ in range(2):
+        result=subprocess.run(['bash',str(copy)],env=env,capture_output=True,text=True,timeout=5)
+        assert result.returncode==0,result.stderr
+    rules=json.loads(state.read_text())
+    assert len(rules)==2
+    assert all(r[0]=='FORWARD' for r in rules)
+    assert {r[1] for r in rules}=={'-i','-o'}
+    for r in rules:
+        assert r[2]=='tailscale0' and r[r.index('-p')+1]=='tcp'
+        assert r[r.index('--tcp-flags')+1:r.index('--tcp-flags')+3]==['SYN,RST','SYN']
+        assert r[-3:]==['-j','TCPMSS','--clamp-mss-to-pmtu']
+    calls=[json.loads(l) for l in log.read_text().splitlines()]
+    assert all(c[:4]==['--wait','5','-t','mangle'] for c in calls)
+    assert all('-F' not in c and '-D' not in c for c in calls)
+
+
+def test_vm_vpn_mss_runs_before_agent_and_restarts_with_tailscaled():
+    unit=(ROOT/'deploy/kakao-vpn-mss.service').read_text()
+    agent=(ROOT/'deploy/kakao-network-agent.service').read_text()
+    setup=(ROOT/'scripts/setup-vm-vpn.sh').read_text()
+    assert 'PartOf=tailscaled.service' in unit
+    assert 'Before=kakao-network-agent.service docker.service' in unit
+    assert 'kakao-vpn-mss.service' in agent.split('[Service]')[0]
+    assert 'modprobe xt_TCPMSS' in setup
+    assert 'systemctl restart kakao-vpn-mss.service' in setup

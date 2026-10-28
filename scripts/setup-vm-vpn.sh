@@ -13,9 +13,14 @@ command -v tailscale >/dev/null || { echo '먼저 VM에 공식 Tailscale 패키�
 # Current Tailscale uses CONNMARK; Lima's minimal kernel does not autoload it.
 modprobe xt_connmark
 modprobe xt_mark
-printf '%s\n' xt_connmark xt_mark > /etc/modules-load.d/kakao-vpn.conf
+modprobe xt_TCPMSS
+printf '%s\n' xt_connmark xt_mark xt_TCPMSS > /etc/modules-load.d/kakao-vpn.conf
+install -m 0755 scripts/vm-vpn-mss.sh /usr/local/sbin/kakao-vpn-mss
+install -m 0644 deploy/kakao-vpn-mss.service /etc/systemd/system/kakao-vpn-mss.service
 install -m 0644 deploy/kakao-network-agent.service /etc/systemd/system/kakao-network-agent.service
 systemctl daemon-reload
+systemctl enable --now kakao-vpn-mss.service
+systemctl restart kakao-vpn-mss.service
 systemctl enable --now kakao-network-agent.service
 systemctl restart kakao-network-agent.service
 [[ -S /run/kakao-network/control.sock ]] || { sleep 1; test -S /run/kakao-network/control.sock; }

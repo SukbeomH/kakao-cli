@@ -24,7 +24,10 @@ limactl shell --workdir / kakao
 ```
 
 준비 스크립트는 전용 Linux VM의 Tailscale 설치를 확인하고, 필요한 `xt_connmark`/`xt_mark`
-모듈과 제한된 제어 서비스를 설정합니다. `.network-enabled` 표식을 통해 다음 업데이트 때도
+및 `xt_TCPMSS` 모듈과 제한된 제어 서비스를 설정합니다.
+Android/Docker의 MTU(보통 1500)와 Tailscale의 MTU(보통 1280)가 다를 때 TLS나 대화 동기화가
+멈추지 않도록, VM의 `tailscale0`를 통과하는 TCP 연결의 MSS를 경로 MTU에 맞춥니다.
+이 규칙은 부팅·tailscaled 재시작 때 다시 확인하며, 기존 방화벽 규칙을 지우지 않습니다. `.network-enabled` 표식을 통해 다음 업데이트 때도
 선택적 Compose 구성을 유지합니다. Tailscale 패키지와 로그인 상태는 컨테이너 밖의 VM에 남습니다.
 VM을 다시 만들면 새 장치로 인증해야 합니다.
 
@@ -124,6 +127,13 @@ Tailscale 자체 로그에 인증 안내가 있을 수 있습니다.
 Exit node의 온라인 상태, VM과 Android의 외부 경로, 앱의 네트워크 오류 해소를 별도로 확인합니다.
 `Some peers are advertising routes but --accept-routes is false`는 다른 장치의 서브넷 경로를
 자동 수락하지 않는다는 안내입니다. Exit node 선택과는 별개입니다.
+
+VM에서는 HTTPS가 열리는데 Android에서 TCP 연결 후 TLS가 멈추거나 대화 동기화가 안 되면
+먼저 `./scripts/setup-vm-vpn.sh kakao`를 다시 실행해 MSS 보정 서비스를 준비합니다.
+VM의 `kakao-vpn-mss.service`가 활성 상태이고 mangle/FORWARD에 `tailscale0` 양방향 TCPMSS 규칙이
+있는지 확인합니다. 적용 전 만들어진 TCP 연결에는 새 MSS 값이 소급되지 않으므로 앱을 다시 실행합니다.
+Exit node를 변경했을 때도 기존 앱 연결이 이전 경로에 남아 있으면 앱 재실행이 필요할 수 있습니다.
+이 조치는 Android 앱 데이터 삭제나 재로그인을 요구하지 않습니다.
 
 웹 콘솔 접근이 끊겨도 게스트 셸에서 VM의 우회를 해제할 수 있습니다.
 
