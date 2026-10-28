@@ -1,12 +1,12 @@
 [project]
 name = "kakao-cli"
-version = "0.1.4"
+version = "0.1.5"
 description = "Read-only DB reception and UI automation for the official KakaoTalk Android app"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 keywords = ["kakaotalk", "adb", "android", "automation", "redroid", "waydroid", "cli"]
-dependencies = ["cryptography>=41", "android-console==0.1.1"]
+dependencies = ["cryptography>=41", "android-console==0.1.2"]
 
 [tool.uv.workspace]
 members = ["packages/android-console"]

@@ -1,0 +1,24 @@
+[Unit]
+Description=Kakao VM restricted VPN management
+Requires=tailscaled.service
+PartOf=tailscaled.service
+After=tailscaled.service
+Before=docker.service
+
+[Service]
+Environment=PYTHONPATH=/opt/kakao-cli/packages/android-console/src
+ExecStart=/usr/bin/python3 -m android_console.vpn_agent --socket /run/kakao-network/control.sock --hostname kakao-lima
+Restart=on-failure
+RuntimeDirectory=kakao-network
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/kakao-network
+
+[Install]
+WantedBy=multi-user.target

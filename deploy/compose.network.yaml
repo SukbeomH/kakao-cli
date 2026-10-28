@@ -1,0 +1,12 @@
+# Opt-in VM VPN control. The agent exposes only login/status/exit/direct over Unix.
+services:
+  webui:
+    environment:
+      ANDROID_CONSOLE_NETWORK_SOCKET: /run/kakao-network/control.sock
+    volumes:
+      - type: bind
+        source: /run/kakao-network
+        target: /run/kakao-network
+        read_only: true
+        bind:
+          create_host_path: false

@@ -160,7 +160,7 @@ VM 재부팅 직후 ③에서 기기가 안 보이면 `adb connect 127.0.0.1:555
 ### ⑤ 외부망
 
 웹 콘솔은 **인터넷에 직접 열지 않는다**. ②의 SSH 터널을 VPN(예: Tailscale, WireGuard) 위에서 쓰거나,
-Tailscale `serve`로 https를 붙이고 `--allow-host <이름>`을 준다. 현재 VM에는 VPN이 설정돼 있지 않다.
+Tailscale `serve`로 https를 붙이고 `--allow-host <이름>`을 준다. 선택적으로 [VM 전용 Tailscale 관리](docs/vm-vpn.md)를 설정하면 CLI·TUI·웹 UI에서 인증과 Exit node 선택을 진행할 수 있다.
 휴대폰은 SSH 터널 앱(Termius 등)으로 `8800`을 포워딩해 `http://localhost:8800`을 연다.
 
 ### ⑥ 새 Linux 호스트
@@ -213,6 +213,7 @@ Android platform-tools(adb)로 `pip install -e ./packages/android-console -e .` 
 | `watch` / `track` | (보조) 알림·전체목록 기반 수신 |
 | `tui` | 대화형 터미널 UI(방 목록·실시간 읽기·전송) |
 | `webui` | 웹 기기 콘솔: 화면·키보드·파일(채팅은 `tui`) |
+| `vpn` | VM 전용 Tailscale 상태·로그인·Exit node 선택·우회 해제·VPN TUI |
 
 공통 옵션: `--json`, `--serial`, `--connect HOST:PORT`, `--adb PATH`. 송신류는 `--home`으로
 전송 후 앱을 백그라운드로 보낼 수 있다. 자세한 사용법은 `kakao <command> --help` 또는

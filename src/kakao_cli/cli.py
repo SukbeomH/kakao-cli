@@ -142,7 +142,7 @@ def cmd_poll(args) -> int:
 
 def cmd_tui(args) -> int:
     from . import tui
-    tui.run(serial=args.serial, addr=args.addr, adb=args.adb, receiver=_receiver(args))
+    tui.run(serial=args.serial, addr=args.addr, adb=args.adb, receiver=_receiver(args), vpn_url=args.vpn_url)
     return 0
 
 
@@ -154,7 +154,8 @@ def cmd_webui(args) -> int:
               allow_hosts=args.allow_host or (), scrcpy_server=args.scrcpy_server,
               use_scrcpy=not args.no_scrcpy, video_mode=args.video_mode,
               video_max_fps=args.video_max_fps, video_bit_rate=args.video_bit_rate,
-              video_max_size=args.video_max_size, vd_dpi=args.vd_dpi, vd_max_size=args.vd_max_size)
+              video_max_size=args.video_max_size, vd_dpi=args.vd_dpi, vd_max_size=args.vd_max_size,
+              network_socket=args.network_socket)
     return 0
 
 
@@ -218,6 +219,8 @@ def build_parser():
         epilog=_EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"kakao-cli {__version__}")
     sub = ap.add_subparsers(dest="command", required=True, metavar="<command>")
+    from android_console.vpn import add_parser
+    add_parser(sub, 'http://127.0.0.1:8800')
 
     for name, fn, extra in [
         ("doctor", cmd_doctor, None),
@@ -267,7 +270,10 @@ def build_parser():
             sp.add_argument("room", help="room name or 'me'")
             sp.add_argument("--interval", type=float, default=3.0, metavar="SEC", help="poll interval (default: 3)")
             sp.add_argument("--limit", type=int, default=10, metavar="N", help="messages to scan per poll (default: 10)")
+        elif extra == "tui":
+            sp.add_argument('--vpn-url', default='http://127.0.0.1:8800', help='VM console URL for the V-key VPN panel')
         elif extra == "webui":
+            sp.add_argument('--network-socket', help='Opt-in Linux VM VPN management Unix socket')
             sp.add_argument("--host", default="127.0.0.1", metavar="HOST",
                             help="bind address (default: 127.0.0.1; 0.0.0.0 exposes it unauthenticated)")
             sp.add_argument("--port", type=int, default=8800, metavar="PORT", help="TCP port (default: 8800)")

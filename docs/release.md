@@ -7,17 +7,18 @@ Lima VM 디스크, Android `/data`, ADB 키, 로그인 상태와 개인 캐시�
 
 ## 사용자 설치
 
-현재 배포는 `kakao-cli 0.1.4` / `android-console 0.1.1` preview다.
-양방향 클립보드, 우클릭, 키보드 대기열 개선, 한글 실시간 조합 전달을 포함한다.
-[v0.1.4 변경·갱신 방법](releases/v0.1.4.md)을 참고한다. Mac 런타임은 Lima 2.2 이상이 필요하다.
+현재 배포는 `kakao-cli 0.1.5` / `android-console 0.1.2` preview다.
+CLI·TUI·웹 UI의 VM 전용 Tailscale 로그인·Exit node 관리 기능을 포함한다.
+기존 클립보드·우클릭·한글 입력 개선도 유지한다.
+[v0.1.5 변경·갱신 방법](releases/v0.1.5.md)을 참고한다. Mac 런타임은 Lima 2.2 이상이 필요하다.
 
-Releases의 **`kakao-cli-0.1.4-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
+Releases의 **`kakao-cli-0.1.5-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
 GitHub가 자동 생성하는 Source code 압축파일 대신 첨부된 설치 패키지를 사용한다.
 
 ```bash
-awk '$2 == "kakao-cli-0.1.4-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
-tar -xzf kakao-cli-0.1.4-macos-arm64.tar.gz
-cd kakao-cli-0.1.4-macos-arm64
+awk '$2 == "kakao-cli-0.1.5-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
+tar -xzf kakao-cli-0.1.5-macos-arm64.tar.gz
+cd kakao-cli-0.1.5-macos-arm64
 brew install lima
 bash scripts/setup-macos.sh
 ```
@@ -64,13 +65,13 @@ Home·최근 앱 버튼, 포트 8801을 사용하며 KakaoTalk를 자동 실행�
 
 ## 독립 Android 콘솔 설치
 
-`android-console-0.1.1-macos-arm64.tar.gz`와 `SHA256SUMS.txt`를 내려받는다.
+`android-console-0.1.2-macos-arm64.tar.gz`와 `SHA256SUMS.txt`를 내려받는다.
 전체 해시 파일에서 이 파일만 확인하려면 아래처럼 파일 이름을 선택한다.
 
 ```sh
-awk '$2 == "android-console-0.1.1-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
-tar -xzf android-console-0.1.1-macos-arm64.tar.gz
-cd android-console-0.1.1-macos-arm64
+awk '$2 == "android-console-0.1.2-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
+tar -xzf android-console-0.1.2-macos-arm64.tar.gz
+cd android-console-0.1.2-macos-arm64
 brew install lima
 ./setup-macos.sh
 # http://127.0.0.1:8801/
@@ -85,7 +86,7 @@ Lima 2.2 이상이 필요하다. CPU 2개·메모리 4GiB·디스크 20GiB의 �
 릴리즈에서 두 wheel을 내려받은 뒤 함께 지정한다. `android-console`만 쓰면 첫 wheel만 필요하다.
 
 ```sh
-python3 -m pip install ./android_console-0.1.1-py3-none-any.whl ./kakao_cli-0.1.4-py3-none-any.whl
+python3 -m pip install ./android_console-0.1.2-py3-none-any.whl ./kakao_cli-0.1.5-py3-none-any.whl
 android-console serve --serial DEVICE_SERIAL
 ```
 

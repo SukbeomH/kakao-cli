@@ -10,7 +10,7 @@ members = [
 
 [[package]]
 name = "android-console"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/android-console" }
 
 [[package]]
@@ -200,7 +200,7 @@ wheels = [
 
 [[package]]
 name = "kakao-cli"
-version = "0.1.4"
+version = "0.1.5"
 source = { editable = "." }
 dependencies = [
     { name = "android-console" },
