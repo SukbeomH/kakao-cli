@@ -1,8 +1,8 @@
 [Unit]
 Description=Kakao VM restricted VPN management
-Requires=tailscaled.service
+Requires=tailscaled.service kakao-vpn-mss.service
 PartOf=tailscaled.service
-After=tailscaled.service
+After=tailscaled.service kakao-vpn-mss.service
 Before=docker.service
 
 [Service]

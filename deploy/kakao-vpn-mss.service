@@ -1,0 +1,18 @@
+[Unit]
+Description=Kakao VM forwarded TCP path MTU protection
+Requires=tailscaled.service
+After=tailscaled.service
+PartOf=tailscaled.service
+Before=kakao-network-agent.service docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/kakao-vpn-mss
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

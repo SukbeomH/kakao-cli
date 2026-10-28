@@ -7,18 +7,18 @@ Lima VM 디스크, Android `/data`, ADB 키, 로그인 상태와 개인 캐시�
 
 ## 사용자 설치
 
-현재 배포는 `kakao-cli 0.1.5` / `android-console 0.1.2` preview다.
-CLI·TUI·웹 UI의 VM 전용 Tailscale 로그인·Exit node 관리 기능을 포함한다.
-기존 클립보드·우클릭·한글 입력 개선도 유지한다.
-[v0.1.5 변경·갱신 방법](releases/v0.1.5.md)을 참고한다. Mac 런타임은 Lima 2.2 이상이 필요하다.
+현재 배포는 `kakao-cli 0.1.6` / `android-console 0.1.2` preview다.
+VM VPN의 MTU/MSS 차이로 대화 조회·전송이 멈추는 문제를 수정했다.
+CLI·TUI·웹 UI의 Tailscale 관리와 기존 클립보드·우클릭·한글 입력 개선도 유지한다.
+[v0.1.6 변경·갱신 방법](releases/v0.1.6.md)을 참고한다. Mac 런타임은 Lima 2.2 이상이 필요하다.
 
-Releases의 **`kakao-cli-0.1.5-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
+Releases의 **`kakao-cli-0.1.6-macos-arm64.tar.gz`와 `SHA256SUMS.txt`**를 같은 폴더에 받는다.
 GitHub가 자동 생성하는 Source code 압축파일 대신 첨부된 설치 패키지를 사용한다.
 
 ```bash
-awk '$2 == "kakao-cli-0.1.5-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
-tar -xzf kakao-cli-0.1.5-macos-arm64.tar.gz
-cd kakao-cli-0.1.5-macos-arm64
+awk '$2 == "kakao-cli-0.1.6-macos-arm64.tar.gz"' SHA256SUMS.txt | shasum -a 256 -c -
+tar -xzf kakao-cli-0.1.6-macos-arm64.tar.gz
+cd kakao-cli-0.1.6-macos-arm64
 brew install lima
 bash scripts/setup-macos.sh
 ```
@@ -40,7 +40,8 @@ bash scripts/setup-macos.sh
 신규 설치기 자동 흐름은 VM/설치를 대체한 모의 테스트로 검증했다.
 실제 확인한 범위는 수동 설치 후 Android 정상 부팅·doctor·웹 콘솔·로그인 화면과 정상 종료,
 기존 로그인 계정의 콘솔 재생·DB 읽기·대화 목록 전환이다.
-신규 자동 설치 전체 흐름·실제 메시지/파일 송신·재부팅 후 로그인 유지는 미검증이므로 preview로 배포한다.
+신규 자동 설치 전체 흐름에서의 메시지/파일 송신·재부팅 후 로그인 유지는 미검증이므로 preview로 배포한다.
+기존 VM의 VPN 수정 후 대화 표시와 사용자 직접 메시지 전송은 v0.1.6에서 확인했다.
 상세 단계와 문제 해결은 [Mac 가이드](deploy-compose.md#apple-silicon-mac)를 참고한다.
 
 v0.1.1에는 LAN HTTP에서 자동 선택되는 MSE 영상이 약 1분 후 멈추던 문제의 수정이 포함된다.
@@ -86,7 +87,7 @@ Lima 2.2 이상이 필요하다. CPU 2개·메모리 4GiB·디스크 20GiB의 �
 릴리즈에서 두 wheel을 내려받은 뒤 함께 지정한다. `android-console`만 쓰면 첫 wheel만 필요하다.
 
 ```sh
-python3 -m pip install ./android_console-0.1.2-py3-none-any.whl ./kakao_cli-0.1.5-py3-none-any.whl
+python3 -m pip install ./android_console-0.1.2-py3-none-any.whl ./kakao_cli-0.1.6-py3-none-any.whl
 android-console serve --serial DEVICE_SERIAL
 ```
 
