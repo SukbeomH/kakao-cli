@@ -35,8 +35,9 @@ def _truncw(s: str, w: int) -> str:
 
 
 class TUI:
-    def __init__(self, worker: Worker):
+    def __init__(self, worker: Worker, vpn_url='http://127.0.0.1:8800'):
         self.w = worker
+        self.vpn_url = vpn_url
         self.rooms: list[dict] = []
         self.sel = 0
         self.focus = "list"          # 'list' | 'input'
@@ -83,7 +84,7 @@ class TUI:
         lw = max(24, wd // 3)
         # header
         scr.attron(curses.A_REVERSE)
-        scr.addstr(0, 0, _truncw(" kakao-cli  —  Tab: focus  ↑↓/Enter: room  Enter: send  q: quit", wd - 1).ljust(wd - 1))
+        scr.addstr(0, 0, _truncw(" kakao-cli  —  Tab: focus  ↑↓/Enter: room  Enter: send  v: VPN  q: quit", wd - 1).ljust(wd - 1))
         scr.attroff(curses.A_REVERSE)
         # room list (left)
         for i, r in enumerate(self.rooms[: h - 3]):
@@ -156,6 +157,11 @@ class TUI:
                         break
                     if ch == "r":
                         self.w.put("rooms")
+                    if ch in ('v', 'V'):
+                        from android_console.vpn_tui import run
+                        run(self.vpn_url, screen=scr)
+                        scr.timeout(50)
+                        dirty = True
                     if ch == "\t":
                         self.focus = "input"
                     elif ch in ("\n", "\r") and self.rooms:
@@ -188,10 +194,10 @@ class TUI:
         self.w.put("quit")
 
 
-def run(serial=None, addr=None, adb="adb", receiver=None):
+def run(serial=None, addr=None, adb="adb", receiver=None, vpn_url='http://127.0.0.1:8800'):
     locale.setlocale(locale.LC_ALL, "")
     dev = receiver.dev if receiver else connect(serial, addr, adb=adb)
     worker = Worker(dev)
     worker.receiver = receiver
-    tui = TUI(worker)
+    tui = TUI(worker, vpn_url=vpn_url)
     curses.wrapper(tui.loop)

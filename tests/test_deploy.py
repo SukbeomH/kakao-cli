@@ -86,3 +86,23 @@ esac
     inputs = [line for line in log.read_text().splitlines() if ' input ' in line]
     assert inputs == ['-s fake:5555 shell input keyevent KEYCODE_HOME']
     assert 'ADB_INPUT_TEXT' not in log.read_text() and 'tap ' not in log.read_text()
+
+
+def test_lima_network_opt_in_survives_updates_and_can_be_disabled(tmp_path):
+    log = tmp_path / 'calls.jsonl'
+    stub(tmp_path / 'limactl', '''#!/usr/bin/env python3
+import json,os,sys
+if 'tar' in sys.argv: sys.stdin.buffer.read()
+if '.network-enabled' in ' '.join(sys.argv): print('enabled')
+with open(os.environ['KAKAO_TEST_CALLS'],'a') as out:
+ out.write(json.dumps(sys.argv[1:])+'\\n')
+''')
+    env = dict(os.environ, PATH=str(tmp_path)+os.pathsep+os.environ['PATH'], KAKAO_TEST_CALLS=str(log))
+    env.pop('KAKAO_NETWORK', None)
+    result = subprocess.run(['bash','scripts/lima-compose.sh','config','--quiet'], cwd=ROOT, env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert 'deploy/compose.network.yaml' in json.loads(log.read_text().splitlines()[-1])
+    env['KAKAO_NETWORK'] = '0'
+    result = subprocess.run(['bash','scripts/lima-compose.sh','config','--quiet'], cwd=ROOT, env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert 'deploy/compose.network.yaml' not in json.loads(log.read_text().splitlines()[-1])

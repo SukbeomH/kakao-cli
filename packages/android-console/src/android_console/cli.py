@@ -28,6 +28,8 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="android-console")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
+    from .vpn import add_parser
+    add_parser(commands)
     serve = commands.add_parser("serve", help="open an Android device in the browser")
     serve.add_argument("--serial")
     serve.add_argument("--connect", dest="addr")
@@ -40,6 +42,7 @@ def build_parser():
     serve.add_argument("--allow-host", action="append", default=[], dest="allow_hosts")
     serve.add_argument("--scrcpy-server")
     serve.add_argument("--no-scrcpy", action="store_false", dest="use_scrcpy")
+    serve.add_argument('--network-socket', help='Opt-in Linux VM VPN management Unix socket')
     serve.add_argument("--video-mode", choices=("mirror", "virtual"), default="mirror")
     serve.add_argument("--app", help="package to launch on an optional virtual display")
     serve.add_argument("--video-max-fps", type=positive, default=60)
@@ -62,6 +65,16 @@ def main(argv=None):
         if command == "runtime":
             from .runtime import export_runtime
             print(export_runtime(args["directory"]))
+            return 0
+        if command == 'vpn':
+            from .vpn import command as vpn_command
+            import json
+            result = vpn_command(argparse.Namespace(**args))
+            if isinstance(result, int):return result
+            if args.get('json'):print(json.dumps(result, ensure_ascii=False))
+            else:
+                for key, value in result.items():
+                    if key != 'ok':print(f'{key}: {value}')
             return 0
         app = args.pop("app")
         if app and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+", app):

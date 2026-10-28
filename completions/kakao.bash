@@ -3,7 +3,7 @@
 _kakao() {
     local cur prev words cword
     _init_completion 2>/dev/null || { cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"; }
-    local cmds="doctor rooms read send memo watch send-file pull-media track poll tui webui"
+    local cmds="doctor rooms read send memo watch send-file pull-media track poll tui webui vpn"
     local common="--json --serial --connect --adb -h --help"
 
     # find the subcommand (first non-option word after 'kakao')
@@ -30,7 +30,13 @@ _kakao() {
         pull-media)  opts+=" --new-only" ;;
         track)       opts+=" --interval --window" ;;
         poll)        opts+=" --interval --limit" ;;
-        webui)       opts+=" --host --port --allow-screen --fs-root --max-upload --allow-host --scrcpy-server --no-scrcpy --video-mode --video-max-fps --video-bit-rate --video-max-size --vd-dpi" ;;
+        tui)         opts+=" --vpn-url" ;;
+        vpn)
+            if [[ "$prev" == vpn ]]; then
+                COMPREPLY=( $(compgen -W "status login exit direct tui" -- "$cur") ); return
+            fi
+            opts="--url --json --open -h --help" ;;
+        webui)       opts+=" --host --port --allow-screen --fs-root --max-upload --allow-host --scrcpy-server --no-scrcpy --video-mode --video-max-fps --video-bit-rate --video-max-size --vd-dpi --network-socket" ;;
     esac
 
     # file-arg completion

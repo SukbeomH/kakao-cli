@@ -154,5 +154,12 @@ Kakao 배포 시 두 wheel을 함께 제공하거나 공통 패키지를 먼저 
 아직 PyPI에 게시하지 않은 상태에서 root wheel만 단독 배포하지 마세요.
 
 ```sh
-python -m pip install ./android_console-0.1.1-py3-none-any.whl ./kakao_cli-0.1.4-py3-none-any.whl
+python -m pip install ./android_console-0.1.2-py3-none-any.whl ./kakao_cli-0.1.5-py3-none-any.whl
 ```
+
+## VM VPN 공통 관리
+
+`android-console vpn status/login/exit/direct/tui`는 Linux VM의 관리 콘솔을 통해 Tailscale을 제어합니다.
+카카오 CLI·TUI·웹 UI와 같은 공통 구현입니다. 기본 주소는 `http://127.0.0.1:8801`이며
+`--url`로 변경할 수 있습니다. VM의 선택적 관리 서비스 준비와 인증 흐름은
+[VM 전용 Tailscale 가이드](vm-vpn.md)를 참고하세요.

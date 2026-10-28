@@ -34,3 +34,10 @@ PNG 캡처도 입력 처리와 분리합니다. 전송 실패 시 대기 입력�
 
 인증 기능은 없습니다. 원격 접근은 loopback 바인딩과 SSH 터널을 권장합니다.
 기존 kakao-cli는 이 패키지의 공통 기능을 사용하며 앱 전용 정책만 별도 유지합니다.
+
+선택적으로 Linux VM의 Tailscale 로그인·상태·Exit node·우회 해제를 관리합니다.
+웹 UI의 **VM VPN**, `android-console vpn status/login/exit/direct/tui`를 사용합니다.
+기본 관리 콘솔 주소는 `http://127.0.0.1:8801`이며 `--url`로 지정할 수 있습니다.
+CLI/TUI는 콘솔 API만 사용하고 macOS의 Tailscale 설정을 변경하지 않습니다.
+VM의 제한된 관리 에이전트와 `--network-socket` 설정이 별도로 필요하며, 기본은 비활성화입니다.
+설치·인증 방법은 저장소의 [VM VPN 가이드](https://github.com/SukbeomH/kakao-cli/blob/master/docs/vm-vpn.md)를 참고하세요.

@@ -37,6 +37,7 @@ from .scrcpy import enc_secondary_click
 from .video import VideoHub
 from .profile import ConsoleProfile, DEFAULT_PROFILE
 from . import fmp4
+from .vpn import UnixAgentClient, VPNError
 from .fs import (LocalRoot, shq, parse_stat_lines, android_list_cmd,
                  android_parent, unique_name, content_disposition, clean_upload_name,
                  host_allowed)
@@ -169,8 +170,10 @@ def _pump(worker: Worker, state: State):
 
 def make_handler(worker: Worker, state: State, tmpdir: str,
                  screen: ScreenBuffer, screen_enabled: bool, fsroot: LocalRoot,
-                 max_upload: int = DEFAULT_MAX_UPLOAD, allow_hosts=(), disk_free=None, profile=DEFAULT_PROFILE):
+                 max_upload: int = DEFAULT_MAX_UPLOAD, allow_hosts=(), disk_free=None, profile=DEFAULT_PROFILE,
+                 network_socket=None):
     page = render_page(profile)
+    vpn = UnixAgentClient(network_socket) if network_socket else None
     disk_free = disk_free or (lambda d: shutil.disk_usage(d).free)
     # console file transfers run in their own threads (a large push must not
     # freeze the worker's captures/taps); adb's server serializes transports
@@ -289,6 +292,10 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]
+            if path == "/api/vpn":
+                if not screen_enabled or not self._host_ok():
+                    return self._json(403, {"error": "host not allowed"})
+                return self._vpn_request('status')
             if path == "/":
                 self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             elif path == "/api/state":
@@ -409,6 +416,21 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                     self.wfile.write(chunk)
 
         def do_POST(self):
+            if self.path == '/api/vpn':
+                if not self._guard():
+                    return
+                try:
+                    length = int(self.headers.get('Content-Length') or 0)
+                except ValueError:
+                    return self._json(400, {'error': 'bad VPN request length'})
+                if length > 4096:
+                    return self._json(413, {'error': 'VPN request too large'})
+                if length <= 0:
+                    return self._json(400, {'error': 'bad VPN request length'})
+                body = self._read_json()
+                if not isinstance(body, dict) or body.get('action') not in ('login', 'exit', 'direct') or set(body) - {'action', 'node'}:
+                    return self._json(400, {'error': 'bad VPN operation'})
+                return self._vpn_request(body['action'], body.get('node'))
             if self.path.startswith("/api/screen/"):
                 self._screen_control()
             elif self.path in ("/api/fs/pull", "/api/fs/push"):
@@ -662,6 +684,17 @@ def make_handler(worker: Worker, state: State, tmpdir: str,
                 return self._json(200, {"ok": True, "via": "adbkeyboard"})
             self._json(503, {"error": "device clipboard unavailable (scrcpy not running)"})
 
+        def _vpn_request(self, action, node=None):
+            if not vpn:
+                if action == 'status':
+                    return self._json(200, {'ok': True, 'available': False, 'state': 'Unavailable',
+                                            'message': 'VM VPN 관리 서비스가 설정되지 않았습니다', 'exit_nodes': []})
+                return self._json(503, {'error': 'VM VPN management is not configured'})
+            try:
+                return self._json(200, vpn.call(action, node))
+            except VPNError as e:
+                return self._json(503, {'error': str(e)})
+
         def _guard(self) -> bool:
             """Shared gate for every console control: enabled + JSON + same-origin."""
             if not screen_enabled:
@@ -848,7 +881,7 @@ def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
           screen: ScreenBuffer = None, screen_enabled: bool = True,
           fs_root: str = "~", max_upload: int = DEFAULT_MAX_UPLOAD,
           allow_hosts=(), disk_free=None, bridge=None, hub=None,
-          profile=DEFAULT_PROFILE) -> ThreadingHTTPServer:
+          profile=DEFAULT_PROFILE, network_socket=None) -> ThreadingHTTPServer:
     """Build the server (worker already startable). Caller runs serve_forever."""
     state = State()
     state.bridge = bridge
@@ -873,7 +906,8 @@ def serve(worker: Worker, host: str, port: int, tmpdir: str = None,
     try:
         handler = make_handler(worker, state, tmpdir, screen, screen_enabled,
                                LocalRoot(fs_root), max_upload=max_upload,
-                               allow_hosts=tuple(allow_hosts), disk_free=disk_free, profile=profile)
+                               allow_hosts=tuple(allow_hosts), disk_free=disk_free, profile=profile,
+                               network_socket=network_socket or os.environ.get('ANDROID_CONSOLE_NETWORK_SOCKET'))
         httpd = ConsoleServer((host, port), handler)
     except BaseException:
         if owned_tmp:
@@ -890,7 +924,7 @@ def _is_local(host: str) -> bool:
 def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8801, allow_screen=False,
         fs_root="~", max_upload=DEFAULT_MAX_UPLOAD, allow_hosts=(), scrcpy_server=None,
         use_scrcpy=True, video_mode=None, video_max_fps=60, video_bit_rate=4_000_000,
-        video_max_size=1280, vd_dpi="auto", vd_max_size=1280, profile=DEFAULT_PROFILE):
+        video_max_size=1280, vd_dpi="auto", vd_max_size=1280, profile=DEFAULT_PROFILE, network_socket=None):
     dev = connect(serial, addr, adb=adb)
     screen = ScreenBuffer()
     screen_enabled = _is_local(host) or allow_screen
@@ -926,7 +960,7 @@ def run(serial=None, addr=None, adb="adb", host="127.0.0.1", port=8801, allow_sc
             httpd = serve(worker, host, port, tmpdir=tmpdir, screen=screen,
                           screen_enabled=screen_enabled, fs_root=fs_root,
                           max_upload=max_upload, allow_hosts=allow_hosts, bridge=bridge,
-                          hub=hub, profile=profile)
+                          hub=hub, profile=profile, network_socket=network_socket)
             shown = host if host not in ("0.0.0.0", "") else "<host-ip>"
             print(f"{profile.name} on http://{shown}:{port}  (Ctrl-C to stop)", flush=True)
             print(f"  screen: {'ON' if screen_enabled else 'OFF'}; device bridge: {bridge_note}", flush=True)
@@ -1018,6 +1052,9 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   .clipboard-dialog{width:min(560px,calc(100vw - 24px));max-height:calc(100dvh - 24px);
     padding:0;color:var(--fg);background:var(--bg);border:1px solid var(--accent);border-radius:6px}
   .clipboard-dialog::backdrop{background:rgba(0,0,0,.65)}
+  #vpn-login-url{color:var(--accent);overflow-wrap:anywhere}
+  #vpn-nodes{width:100%;min-height:36px;background:var(--bar);color:var(--fg);
+    font:inherit;border:1px solid var(--line);border-radius:3px;padding:4px 8px}
   .clipboard-body{display:flex;flex-direction:column;gap:10px;padding:12px}
   .clipboard-body p{margin:0;white-space:normal;font-size:13px}
   .clipboard-body textarea{width:100%;min-height:140px;max-height:45dvh;resize:vertical;
@@ -1075,6 +1112,7 @@ _PAGE_TEMPLATE = r"""<!doctype html>
   <div class="bar" id="header"><span class="hint"><span class="k">@@NAME@@</span> 콘솔<span class="long"> —
     화면 클릭: 탭·키보드 · 드래그·휠: 스크롤 · Esc: 키보드 해제</span></span>
     <span class="fps" id="cfps" title="영상 프레임률"></span>
+    <button id="vpn-open" aria-haspopup="dialog" aria-controls="vpn-dialog">VM VPN</button>
     <button id="files-open" aria-haspopup="dialog" aria-controls="files-dialog" aria-expanded="false">파일 탐색</button>
     <button id="helpbtn" title="도움말 (?)">?</button></div>
   <div class="console" id="console">
@@ -1115,6 +1153,20 @@ _PAGE_TEMPLATE = r"""<!doctype html>
     <button id="ckclipget" title="기기(VM)의 클립보드를 가져와 로컬로 복사">📋 가져오기</button>
     <button id="ckclip" title="로컬 클립보드를 기기(VM)의 클립보드에 저장 (입력 칸에는 붙여넣지 않음)">📋 넣기</button>
   </div>
+  <dialog id="vpn-dialog" class="clipboard-dialog" aria-labelledby="vpn-title">
+    <div class="files-bar"><h2 id="vpn-title">VM VPN 연결</h2><button id="vpn-close">닫기 ✕</button></div>
+    <div class="clipboard-body">
+      <p>Linux VM의 인터넷 경로를 관리합니다. 맥 전체 네트워크에는 적용되지 않습니다.</p>
+      <p id="vpn-status" role="status">상태 확인 중…</p>
+      <a id="vpn-login-url" target="_blank" rel="noopener noreferrer" hidden>브라우저에서 Tailscale 인증하기 ↗</a>
+      <label for="vpn-nodes">Exit node</label><select id="vpn-nodes" aria-label="Exit node"></select>
+      <p id="vpn-error" role="alert"></p>
+      <div class="clipboard-actions" style="flex-wrap:wrap;gap:8px">
+        <button id="vpn-refresh">새로고침</button><button id="vpn-login">로그인 시작</button>
+        <button id="vpn-apply">선택한 경로 적용</button><button id="vpn-direct">우회 해제</button>
+      </div>
+    </div>
+  </dialog>
   <dialog id="clipboard-dialog" class="clipboard-dialog" aria-labelledby="clipboard-title">
     <div class="files-bar"><h2 id="clipboard-title">클립보드</h2>
       <button id="clipboard-close" aria-label="클립보드 닫기">닫기 ✕</button></div>
@@ -1172,7 +1224,7 @@ function closeHelp(){ $("helpovl").classList.remove("show"); }
 $("helpbtn").onclick = openHelp;
 $("helpovl").addEventListener("click", e=>{ if(e.target.id==="helpovl") closeHelp(); });
 document.addEventListener("keydown", e=>{
-  if($("files-dialog").open || $("clipboard-dialog").open) return; // native dialog owns focus and Escape
+  if($("files-dialog").open || $("clipboard-dialog").open || $("vpn-dialog").open) return; // native dialog owns focus and Escape
   const t = e.target;
   if(t.tagName==="INPUT" || t.tagName==="TEXTAREA") return;   // path boxes / kbcap
   if(e.key==="Escape"){ closeHelp(); return; }
@@ -1301,6 +1353,60 @@ $("ckclip").onclick = async ()=>{
   openClipboard("put", "", "브라우저가 클립보드 읽기를 허용하지 않습니다. 아래에 Ctrl/Cmd+V로 붙여넣고 기기에 넣기를 누르세요.");
   }finally{ $("ckclip").disabled = false; }
 };
+
+// ---- VM-only VPN management; no enrollment URL or node list is persisted ----
+let vpnTimer=null, vpnBusy=false, vpnData={}, vpnEpoch=0;
+async function vpnRequest(action='status'){
+  if(vpnBusy) return;
+  const epoch=vpnEpoch;
+  vpnBusy=true; $('vpn-error').textContent='';
+  ['vpn-refresh','vpn-login','vpn-apply','vpn-direct'].forEach(id=>$(id).disabled=true);
+  try{
+    const options=action==='status'?{}:{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action,node:action==='exit'?$('vpn-nodes').value:null})};
+    options.signal=AbortSignal.timeout(18000);
+    const r=await fetch('/api/vpn',options), data=await r.json();
+    if(epoch!==vpnEpoch)return;
+    if(!r.ok || !data.ok) throw Error(data.error||('HTTP '+r.status));
+    vpnData=data;
+    const stateLabel={Running:'연결됨',NeedsLogin:'인증 필요',Starting:'연결 중',Stopped:'중지'}[data.state]||data.state;
+    $('vpn-status').textContent=data.available?
+      `${data.hostname} · ${stateLabel} · Exit: ${data.exit_node||'직접 연결'}`:
+      (data.message||'VM VPN 관리 서비스가 설정되지 않았습니다');
+    const link=$('vpn-login-url');
+    let auth='';try{const u=new URL(data.auth_url);if(u.protocol==='https:'&&u.hostname==='login.tailscale.com'&&!u.port&&!u.username&&!u.password)auth=u.href;}catch{}
+    link.hidden=!auth;if(auth)link.href=auth;else link.removeAttribute('href');
+    const selected=$('vpn-nodes').value; $('vpn-nodes').replaceChildren();
+    for(const node of data.exit_nodes||[]){
+      const option=document.createElement('option');option.value=node.id;
+      option.textContent=node.name+(node.online?'':' (오프라인)');option.disabled=!node.online;
+      $('vpn-nodes').appendChild(option);
+    }
+    const candidates=data.exit_nodes||[];
+    $('vpn-nodes').value=(candidates.find(n=>n.id===selected&&n.online)||candidates.find(n=>n.name===data.exit_node&&n.online)||candidates.find(n=>n.online)||{}).id||'';
+    $('vpn-error').textContent=(data.health||[]).join(' · ');
+  }catch(e){if(epoch===vpnEpoch)$('vpn-error').textContent=e.message;}
+  finally{
+    if(epoch!==vpnEpoch)return;
+    vpnBusy=false;$('vpn-refresh').disabled=false;
+    $('vpn-login').disabled=!vpnData.available || vpnData.state==='Running';
+    $('vpn-apply').disabled=!vpnData.available || vpnData.state!=='Running' || !(vpnData.exit_nodes||[]).some(n=>n.online);
+    $('vpn-direct').disabled=!vpnData.available || vpnData.state!=='Running';
+  }
+}
+$('vpn-open').onclick=()=>{
+  $('kbcap').blur();$('vpn-dialog').showModal();vpnRequest();
+  clearInterval(vpnTimer);vpnTimer=setInterval(()=>{if($('vpn-dialog').open)vpnRequest();},2500);
+};
+$('vpn-close').onclick=()=>$('vpn-dialog').close();
+$('vpn-dialog').addEventListener('close',()=>{
+  vpnEpoch++;vpnBusy=false;
+  clearInterval(vpnTimer);vpnTimer=null;
+  $('vpn-login-url').hidden=true;$('vpn-login-url').removeAttribute('href');
+  $('vpn-nodes').replaceChildren();vpnData={};
+});
+$('vpn-refresh').onclick=()=>vpnRequest();$('vpn-login').onclick=()=>vpnRequest('login');
+$('vpn-apply').onclick=()=>vpnRequest('exit');$('vpn-direct').onclick=()=>vpnRequest('direct');
 
 // ---- live screen: PNG frames (fallback renderer) ----
 let frameLoop=false, fpsCount=0, fpsT=Date.now(), scrSeq=0, pngWanted=true;

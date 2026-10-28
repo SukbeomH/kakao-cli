@@ -1,4 +1,4 @@
-.TH KAKAO 1 "2026-10-16" "kakao-cli 0.1.0" "User Commands"
+.TH KAKAO 1 "2026-10-28" "kakao-cli 0.1.5" "User Commands"
 .SH NAME
 kakao \- drive the official KakaoTalk Android app over adb
 .SH SYNOPSIS
@@ -82,7 +82,14 @@ notifications to post.
 .TP
 .B tui
 Interactive terminal UI: browse rooms, read live, and send. Tab toggles focus,
-arrows/Enter pick a room, type + Enter sends, q quits.
+arrows/Enter pick a room, type + Enter sends, v opens VM VPN management, q quits.
+.TP
+.BI "vpn " "status|login|exit|direct|tui"
+Manage Tailscale in the Linux VM through the web console API.
+Use login --open to approve VM enrollment in a browser, exit IP to select an
+online Exit node, or direct to clear VM exit routing.
+--url sets the console origin (default http://127.0.0.1:8800).
+The client never invokes macOS Tailscale. VM-side setup is required.
 .TP
 .B webui
 A device console in the browser (stdlib HTTP, no deps). The web UI has no chat

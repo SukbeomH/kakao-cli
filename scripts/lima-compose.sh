@@ -41,10 +41,19 @@ task_source_files() {
 task_source_files \
   | COPYFILE_DISABLE=1 tar --no-xattrs -C "$TASK_REPO_ROOT" --null -T - -cf - \
   | limactl shell --workdir / "$TASK_LIMA_INSTANCE" sudo tar -xf - -C "$TASK_LIMA_DIR"
+# A marker created by setup-vm-vpn.sh keeps this opt-in across later updates.
+TASK_NETWORK_ARGS=()
+TASK_NETWORK_MODE="${KAKAO_NETWORK:-}"
+if [[ -z "$TASK_NETWORK_MODE" ]]; then
+  TASK_NETWORK_MODE="$(limactl shell --workdir / "$TASK_LIMA_INSTANCE" sudo cat /opt/kakao-cli/.network-enabled 2>/dev/null || true)"
+fi
+if [[ "$TASK_NETWORK_MODE" == 1 || "$TASK_NETWORK_MODE" == enabled ]]; then
+  TASK_NETWORK_ARGS=(-f deploy/compose.network.yaml)
+fi
 # 절대 경로 --workdir를 써서 맥의 현재 디렉터리를 게스트에서 찾지 않게 한다.
 exec limactl shell --workdir "$TASK_LIMA_DIR" "$TASK_LIMA_INSTANCE" \
   sudo env COMPOSE_DISABLE_ENV_FILE=1 \
   "KAKAO_ADB_SECURE=${KAKAO_ADB_SECURE:-0}" "KAKAO_WEB_BIND=${KAKAO_WEB_BIND:-127.0.0.1}" \
   "KAKAO_ANDROID_FPS=${KAKAO_ANDROID_FPS:-60}" \
   "KAKAO_ANDROID_DATA=${KAKAO_ANDROID_DATA:-/opt/redroid/data}" docker compose --project-name kakao \
-  -f deploy/compose.yaml -f deploy/compose.lima.yaml "$@"
+  -f deploy/compose.yaml -f deploy/compose.lima.yaml "${TASK_NETWORK_ARGS[@]}" "$@"
